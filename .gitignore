@@ -61,3 +61,7 @@ artifacts/
 # Docker
 # (ignore optional overrides or local files)
 docker-compose.override.yml
+
+
+# Local config files (may contain secrets)
+src/config/settings.py
