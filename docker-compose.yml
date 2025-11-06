@@ -21,16 +21,36 @@ services:
     volumes:
       - mongo_data:/data/db
 
-  chroma:
-    image: chromadb/chroma:latest
-    container_name: chroma_mem
-    ports:
-      - "8000:8000"
+ 
+ 
+  chromadb:
+    image: chromadb/chroma:0.5.18
+    container_name: chromadb
+    ports: ["8000:8000"]
     environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
       - IS_PERSISTENT=TRUE
-      - PERSIST_DIRECTORY=/chroma
+      - ALLOW_RESET=TRUE
+      - ANONYMIZED_TELEMETRY=false
     volumes:
-      - chroma_data:/chroma
+      - ./chroma-data:/chroma/chroma
+
+  neo4j:
+    image: neo4j:5.22
+    container_name: neo4j
+    environment:
+      - NEO4J_AUTH=neo4j/neo4j123
+      - NEO4J_dbms_security_auth__enabled=true
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=512m
+    ports:
+      - "7474:7474" # Browser
+      - "7687:7687" # Bolt
+    volumes:
+      - ./neo4j-data:/data
+
+
 
 volumes:
   redis_data:
