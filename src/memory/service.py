@@ -1,12 +1,12 @@
-# src/memory/service.py
+
 from .redis_store import RedisMemoryStore
 from .mongo_longterm import MongoLongTermStore
 from .chroma_semantic import ChromaSemanticStore
 from .embeddings import openai_embed
-from ..config.settings import REDIS_URL, MONGO_URL, MONGO_DB, CHROMA_HOST, CHROMA_PORT
-import os
-from .chroma_semantic import ChromaSemanticStore
 from .neo4j_associative import Neo4jAssociativeStore
+from ..config.settings import (
+    REDIS_URL, MONGO_URL, MONGO_DB, CHROMA_HOST, CHROMA_PORT
+)
 
 from .types import (
     RedisMemoryIn, SemanticCreate,
@@ -23,7 +23,7 @@ class MemoryService:
         chroma_semantic: ChromaSemanticStore | None = None,
         openai_embed_fn=None,
     ):
-        # use env-driven defaults if not provided
+       
         self.redis = RedisMemoryStore(redis_url or REDIS_URL)
         self.mongo = MongoLongTermStore(mongo_url or MONGO_URL, (mongo_db or MONGO_DB))
         self.semantic = chroma_semantic or ChromaSemanticStore(CHROMA_HOST, CHROMA_PORT)
@@ -38,6 +38,12 @@ class MemoryService:
     async def add_working(self, m: RedisMemoryIn):
         assert m.memory_type == "working"
         return await self.redis.create(m)
+    
+    async def get_short_term(self, agent_id: str, limit: int = 50):
+        return await self.redis.get_many("short_term", agent_id, limit)
+
+    async def get_working(self, agent_id: str, limit: int = 50):
+        return await self.redis.get_many("working", agent_id, limit)
 
     # -------- Semantic (Chroma) --------
     async def add_semantic(self, m: SemanticCreate) -> str:
@@ -60,6 +66,15 @@ class MemoryService:
 
     async def add_ep_observation(self, m: EpisodicObservationCreate) -> str:
         return await self.mongo.create_ep_observation(m)
+    
+    async def get_ep_conversational(self, agent_id: str, limit: int = 50):
+        return await self.mongo.list_ep_conversational(agent_id, limit)
+
+    async def get_ep_summaries(self, agent_id: str, limit: int = 50):
+        return await self.mongo.list_ep_summaries(agent_id, limit)
+
+    async def get_ep_observations(self, agent_id: str, limit: int = 50):
+        return await self.mongo.list_ep_observations(agent_id, limit)
 
     # -------- Procedural --------
     async def add_proc_agent(self, m: ProceduralAgentCreate) -> str:
@@ -70,3 +85,12 @@ class MemoryService:
 
     async def add_proc_workflow(self, m: ProceduralWorkflowCreate) -> str:
         return await self.mongo.create_proc_workflow(m)
+    
+    async def get_proc_agents(self, agent_id: str, limit: int = 50):
+        return await self.mongo.list_proc_agents(agent_id, limit)
+
+    async def get_proc_tools(self, agent_id: str, limit: int = 50):
+        return await self.mongo.list_proc_tools(agent_id, limit)
+
+    async def get_proc_workflows(self, agent_id: str, limit: int = 50):
+        return await self.mongo.list_proc_workflows(agent_id, limit)

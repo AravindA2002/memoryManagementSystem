@@ -6,9 +6,7 @@ import redis.asyncio as redis
 
 from .types import RedisMemoryIn, RedisMemoryOut, RedisMemoryType
 
-# Keys:
-#  - rm:{type}:{agent_id}:{id} -> JSON value, set with TTL
-#  - rmidx:{type}:{agent_id}   -> ZSET of (score=created_ts, member=id)
+
 
 class RedisMemoryStore:
     def __init__(self, url: str):
@@ -34,11 +32,11 @@ class RedisMemoryStore:
             "ttl": m.ttl,
             "created_at": now.isoformat(),
         }
-        # store value and TTL
+       
         pipe = self.r.pipeline()
         pipe.set(key, json.dumps(payload), ex=m.ttl)
         pipe.zadd(self._idx(m.memory_type, m.agent_id), {id_: now.timestamp()})
-        # Let the index entry auto-expire when the value is gone (cleanup on read)
+       
         await pipe.execute()
         return RedisMemoryOut(**payload)
 
@@ -55,7 +53,7 @@ class RedisMemoryStore:
                 continue
             data = json.loads(raw)
             results.append(RedisMemoryOut(**data))
-        # prune missing ids from index
+       
         if to_prune:
             await self.r.zrem(idx, *to_prune)
         return results
@@ -67,5 +65,5 @@ class RedisMemoryStore:
         pipe.delete(key)
         pipe.zrem(idx, id_)
         res = await pipe.execute()
-        # returns number of keys removed (value + idx member)
+      
         return int(res[0]) + int(res[1])

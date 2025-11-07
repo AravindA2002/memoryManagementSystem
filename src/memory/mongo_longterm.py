@@ -27,7 +27,7 @@ class MongoLongTermStore:
     async def ensure_indexes(self) -> None:
         if self._ready:
             return
-        # Episodic
+       
         for cname in (COLS["episodic_conversational"], COLS["episodic_summaries"], COLS["episodic_observations"]):
             await self.db[cname].create_index([("agent_id",1), ("created_at",-1)])
             await self.db[cname].create_index([("agent_id",1), ("tags",1)])
@@ -35,14 +35,14 @@ class MongoLongTermStore:
         await self.db[COLS["episodic_summaries"]].create_index([("agent_id",1), ("conversation_id",1), ("span_start",1), ("span_end",1)])
         await self.db[COLS["episodic_observations"]].create_index([("agent_id",1), ("observation_id",1)])
 
-        # Procedural
+        
         await self.db[COLS["procedural_agent_store"]].create_index([("agent_id",1), ("name",1), ("version",-1)])
         await self.db[COLS["procedural_tool_store"]].create_index([("agent_id",1), ("name",1), ("version",-1)])
         await self.db[COLS["procedural_workflow_store"]].create_index([("agent_id",1), ("name",1), ("version",-1)])
 
         self._ready = True
 
-    # --------- Append-only writers (Episodic) ---------
+    
     async def create_ep_conversational(self, m: EpisodicConversationalCreate) -> str:
         await self.ensure_indexes()
         doc = m.model_dump()
@@ -63,10 +63,33 @@ class MongoLongTermStore:
         doc["id"] = str(uuid4())
         await self.db[COLS["episodic_observations"]].insert_one(doc)
         return doc["id"]
+    
+    # --------- Readers (Episodic) ---------
+    async def list_ep_conversational(self, agent_id: str, limit: int = 50) -> List[dict]:
+        await self.ensure_indexes()
+        cur = (self.db[COLS["episodic_conversational"]]
+               .find({"agent_id": agent_id})
+               .sort("created_at", -1)
+               .limit(limit))
+        return await cur.to_list(length=None)
 
-    # No update methods exposed for episodic → append-only by interface
+    async def list_ep_summaries(self, agent_id: str, limit: int = 50) -> List[dict]:
+        await self.ensure_indexes()
+        cur = (self.db[COLS["episodic_summaries"]]
+               .find({"agent_id": agent_id})
+               .sort("created_at", -1)
+               .limit(limit))
+        return await cur.to_list(length=None)
 
-    # --------- Procedural writers ---------
+    async def list_ep_observations(self, agent_id: str, limit: int = 50) -> List[dict]:
+        await self.ensure_indexes()
+        cur = (self.db[COLS["episodic_observations"]]
+               .find({"agent_id": agent_id})
+               .sort("created_at", -1)
+               .limit(limit))
+        return await cur.to_list(length=None)
+
+   
     async def create_proc_agent(self, m: ProceduralAgentCreate) -> str:
         await self.ensure_indexes()
         doc = m.model_dump()
@@ -87,3 +110,28 @@ class MongoLongTermStore:
         doc["id"] = str(uuid4())
         await self.db[COLS["procedural_workflow_store"]].insert_one(doc)
         return doc["id"]
+    
+    # --------- Readers (Procedural) ---------
+    async def list_proc_agents(self, agent_id: str, limit: int = 50) -> List[dict]:
+        await self.ensure_indexes()
+        cur = (self.db[COLS["procedural_agent_store"]]
+               .find({"agent_id": agent_id})
+               .sort("created_at", -1)
+               .limit(limit))
+        return await cur.to_list(length=None)
+
+    async def list_proc_tools(self, agent_id: str, limit: int = 50) -> List[dict]:
+        await self.ensure_indexes()
+        cur = (self.db[COLS["procedural_tool_store"]]
+               .find({"agent_id": agent_id})
+               .sort("created_at", -1)
+               .limit(limit))
+        return await cur.to_list(length=None)
+
+    async def list_proc_workflows(self, agent_id: str, limit: int = 50) -> List[dict]:
+        await self.ensure_indexes()
+        cur = (self.db[COLS["procedural_workflow_store"]]
+               .find({"agent_id": agent_id})
+               .sort("created_at", -1)
+               .limit(limit))
+        return await cur.to_list(length=None)

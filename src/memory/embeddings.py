@@ -1,8 +1,10 @@
-from typing import List, Tuple
+from typing import List
 from openai import OpenAI
 from ..config.settings import OPENAI_API_KEY, OPENAI_EMBED_MODEL
 
-_client = OpenAI(api_key=OPENAI_API_KEY)
+
+_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
+
 
 def openai_embed(text: str) -> List[float]:
     text = (text or "").strip()

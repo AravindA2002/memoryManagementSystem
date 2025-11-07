@@ -5,8 +5,8 @@ from datetime import datetime
 
 # -------------------- Base --------------------
 class BaseDoc(BaseModel):
-    agent_id: str                          # partition key
-    memory: str                            # the human-readable body
+    agent_id: str                         
+    memory: str                            
     memory_type: Literal["semantic","episodic","procedural","associative","short_term","working"]
     tags: List[str] = Field(default_factory=list)
     metadata: Dict[str, object] = Field(default_factory=dict)
@@ -25,8 +25,8 @@ class RedisMemoryIn(BaseModel):
     ttl: int
     memory_type: RedisType
 
-# Keep the alias so older imports don't break
-RedisMemoryType = RedisType  # backward compatibility
+
+RedisMemoryType = RedisType  
 
 from datetime import datetime
 
@@ -35,17 +35,16 @@ class RedisMemoryOut(RedisMemoryIn):
     created_at: datetime
 
 
-# -------------------- Semantic (Chroma) --------------------
+# -------------------- Semantic  --------------------
 class SemanticCreate(BaseDoc):
     memory_type: Literal["semantic"] = "semantic"
     normalized_text: Optional[str] = None
-    # embeddings are produced via OpenAI on write and stored only in Chroma
-    # keep here for traceability if you want to mirror
+   
     embedding_model: Optional[str] = None
     embedding_dim: Optional[int] = None
 
-# -------------------- Episodic (Mongo, append-only) --------------------
-# sub-collections: conversational | summaries | observations
+# -------------------- Episodic --------------------
+
 class EpisodicConversationalCreate(BaseDoc):
     memory_type: Literal["episodic"] = "episodic"
     subtype: Literal["conversational"] = "conversational"
@@ -53,7 +52,7 @@ class EpisodicConversationalCreate(BaseDoc):
     message_id: Optional[str] = None
     role: Optional[Literal["user","assistant","system"]] = None
     turn_index: Optional[int] = None
-    channel: Optional[str] = None        # chat|voice|api
+    channel: Optional[str] = None        
     run_id: Optional[str] = None
 
 class EpisodicSummaryCreate(BaseDoc):
@@ -75,8 +74,8 @@ class EpisodicObservationCreate(BaseDoc):
     credibility: Optional[float] = None
     source: Optional[str] = None
 
-# -------------------- Procedural (Mongo) --------------------
-# sub-collections: agent_store | tool_store | workflow_store
+# -------------------- Procedural  --------------------
+
 class ProceduralAgentCreate(BaseDoc):
     memory_type: Literal["procedural"] = "procedural"
     subtype: Literal["agent_store"] = "agent_store"

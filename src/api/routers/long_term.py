@@ -11,21 +11,11 @@ from ...memory.types import (
     EpisodicConversationalCreate, EpisodicSummaryCreate, EpisodicObservationCreate,
     ProceduralAgentCreate, ProceduralToolCreate, ProceduralWorkflowCreate
 )
+from ..schemas.associative import EntityIn, RelationIn
 
-# All endpoints here will live under /v1/memory/long-term/...
 router = APIRouter(prefix="/long-term", tags=["long-term"])
 
-# ----------- Models -----------
-class EntityIn(BaseModel):
-    name: str = Field(..., description="Unique entity name")
-    labels: List[str] = Field(default_factory=list, description="Additional labels (e.g., Person, Tool)")
-    props: Dict[str, Any] = Field(default_factory=dict, description="Additional properties")
 
-class RelationIn(BaseModel):
-    source: str
-    relation: str = Field(..., description="Relationship type, e.g., USES, BUILDS, FRIEND_OF")
-    target: str
-    props: Dict[str, Any] = Field(default_factory=dict)
 
 # ----------- Associative (Neo4j) Endpoints -----------
 @router.post("/entity", summary="Create/Update an entity")
@@ -41,7 +31,7 @@ def get_entity(name: str, svc = Depends(get_memory_service)):
 @router.post("/associate", summary="Create/Update an association (relation) between two entities")
 def upsert_association(payload: RelationIn, svc = Depends(get_memory_service)):
     rel_type = payload.relation.strip().upper().replace(" ", "_")
-    svc.associative.upsert_entity(payload.source)   # ensure nodes exist
+    svc.associative.upsert_entity(payload.source)   
     svc.associative.upsert_entity(payload.target)
     svc.associative.upsert_relation(payload.source, rel_type, payload.target, payload.props)
     return {"status": "ok", "source": payload.source, "relation": rel_type, "target": payload.target}
@@ -58,7 +48,7 @@ def inbound(name: str = Query(...), svc = Depends(get_memory_service)):
 def path(a: str = Query(...), b: str = Query(...), max_hops: int = Query(4, ge=1, le=6), svc = Depends(get_memory_service)):
     return {"a": a, "b": b, "paths": svc.associative.path_between(a, b, max_hops)}
 
-# ----------- Long-term storage endpoints (these stay here; now under /v1/memory/long-term/...) -----------
+# ----------- Long-term storage endpoints  -----------
 @router.post("/semantic")
 async def add_semantic(m: SemanticCreate, svc: MemoryService = Depends(get_memory_service)):
     return {"id": await svc.add_semantic(m)}
