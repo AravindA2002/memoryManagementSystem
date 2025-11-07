@@ -36,12 +36,14 @@ class RedisMemoryOut(RedisMemoryIn):
 
 
 # -------------------- Semantic  --------------------
+
 class SemanticCreate(BaseDoc):
     memory_type: Literal["semantic"] = "semantic"
-    normalized_text: Optional[str] = None
-   
-    embedding_model: Optional[str] = None
-    embedding_dim: Optional[int] = None
+    normalized_text: Optional[str] = Field(
+        default=None,
+        description="Optional pre-normalized text to embed; if omitted, `memory` is embedded."
+    )
+
 
 # -------------------- Episodic --------------------
 

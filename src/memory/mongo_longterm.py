@@ -64,30 +64,7 @@ class MongoLongTermStore:
         await self.db[COLS["episodic_observations"]].insert_one(doc)
         return doc["id"]
     
-    # --------- Readers (Episodic) ---------
-    async def list_ep_conversational(self, agent_id: str, limit: int = 50) -> List[dict]:
-        await self.ensure_indexes()
-        cur = (self.db[COLS["episodic_conversational"]]
-               .find({"agent_id": agent_id})
-               .sort("created_at", -1)
-               .limit(limit))
-        return await cur.to_list(length=None)
-
-    async def list_ep_summaries(self, agent_id: str, limit: int = 50) -> List[dict]:
-        await self.ensure_indexes()
-        cur = (self.db[COLS["episodic_summaries"]]
-               .find({"agent_id": agent_id})
-               .sort("created_at", -1)
-               .limit(limit))
-        return await cur.to_list(length=None)
-
-    async def list_ep_observations(self, agent_id: str, limit: int = 50) -> List[dict]:
-        await self.ensure_indexes()
-        cur = (self.db[COLS["episodic_observations"]]
-               .find({"agent_id": agent_id})
-               .sort("created_at", -1)
-               .limit(limit))
-        return await cur.to_list(length=None)
+ 
 
    
     async def create_proc_agent(self, m: ProceduralAgentCreate) -> str:
@@ -111,27 +88,66 @@ class MongoLongTermStore:
         await self.db[COLS["procedural_workflow_store"]].insert_one(doc)
         return doc["id"]
     
-    # --------- Readers (Procedural) ---------
+    # --------- Ret  ---------
+    
+
+    async def list_ep_conversational(self, agent_id: str, limit: int = 50) -> List[dict]:
+        await self.ensure_indexes()
+        cur = (
+            self.db[COLS["episodic_conversational"]]
+            .find({"agent_id": agent_id}, {"_id": 0})  
+            .sort("created_at", -1)
+            .limit(limit)
+        )
+        return await cur.to_list(length=None)
+
+    async def list_ep_summaries(self, agent_id: str, limit: int = 50) -> List[dict]:
+        await self.ensure_indexes()
+        cur = (
+            self.db[COLS["episodic_summaries"]]
+            .find({"agent_id": agent_id}, {"_id": 0})
+            .sort("created_at", -1)
+            .limit(limit)
+        )
+        return await cur.to_list(length=None)
+
+    async def list_ep_observations(self, agent_id: str, limit: int = 50) -> List[dict]:
+        await self.ensure_indexes()
+        cur = (
+            self.db[COLS["episodic_observations"]]
+            .find({"agent_id": agent_id}, {"_id": 0})
+            .sort("created_at", -1)
+            .limit(limit)
+        )
+        return await cur.to_list(length=None)
+
     async def list_proc_agents(self, agent_id: str, limit: int = 50) -> List[dict]:
         await self.ensure_indexes()
-        cur = (self.db[COLS["procedural_agent_store"]]
-               .find({"agent_id": agent_id})
-               .sort("created_at", -1)
-               .limit(limit))
+        cur = (
+            self.db[COLS["procedural_agent_store"]]
+            .find({"agent_id": agent_id}, {"_id": 0})
+            .sort("created_at", -1)
+            .limit(limit)
+        )
         return await cur.to_list(length=None)
 
     async def list_proc_tools(self, agent_id: str, limit: int = 50) -> List[dict]:
         await self.ensure_indexes()
-        cur = (self.db[COLS["procedural_tool_store"]]
-               .find({"agent_id": agent_id})
-               .sort("created_at", -1)
-               .limit(limit))
+        cur = (
+            self.db[COLS["procedural_tool_store"]]
+            .find({"agent_id": agent_id}, {"_id": 0})
+            .sort("created_at", -1)
+            .limit(limit)
+        )
         return await cur.to_list(length=None)
 
     async def list_proc_workflows(self, agent_id: str, limit: int = 50) -> List[dict]:
         await self.ensure_indexes()
-        cur = (self.db[COLS["procedural_workflow_store"]]
-               .find({"agent_id": agent_id})
-               .sort("created_at", -1)
-               .limit(limit))
+        cur = (
+            self.db[COLS["procedural_workflow_store"]]
+            .find({"agent_id": agent_id}, {"_id": 0})
+            .sort("created_at", -1)
+            .limit(limit)
+        )
         return await cur.to_list(length=None)
+

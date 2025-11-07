@@ -67,7 +67,7 @@ async def get_proc_workflows(
 ):
     return await svc.get_proc_workflows(agent_id, limit)
 
-# -------- Short-term / Working (Redis) --------
+# -------- Short-term / Working (Redis) -------- make dict, set default 10 mins. enum for Mem type, add key in retreival
 @router.get("/short-term", summary="List short-term memories (Redis)")
 async def get_short_term(
     agent_id: str = Query(...),

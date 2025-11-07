@@ -53,7 +53,7 @@ class Neo4jAssociativeStore:
     def close(self) -> None:
         self._driver.close()
 
-    # ---------- Internal helpers ----------
+    
 
     def _session(self):
         
