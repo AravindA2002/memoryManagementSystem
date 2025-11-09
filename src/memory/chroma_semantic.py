@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from typing import Optional
 import chromadb
 from chromadb.config import Settings, DEFAULT_TENANT, DEFAULT_DATABASE
 from ..config.settings import CHROMA_BASE_URL, CHROMA_HOST, CHROMA_PORT
@@ -77,17 +78,32 @@ class ChromaSemanticStore:
     def list_collections(self):
         return self._client_or_connect().list_collections()
 
-    async def add(self, agent_id: str, text: str, normalized_text: str, embed_fn) -> str:
+    async def add(
+        self, 
+        agent_id: str, 
+        text: str, 
+        normalized_text: str, 
+        embed_fn,
+        message_id: Optional[str] = None,
+        run_id: Optional[str] = None
+    ) -> str:
         col = self.get_or_create_collection(agent_id)
         norm = _norm_text(normalized_text, text)  # <- use memory if normalized is empty/"string"
         emb = embed_fn(norm)
         mem_id = str(uuid.uuid4())
+        
+        metadata = {"normalized_text": norm}
+        if message_id:
+            metadata["message_id"] = message_id
+        if run_id:
+            metadata["run_id"] = run_id
+            
         col.add(
-        ids=[mem_id],
-        documents=[text],
-        embeddings=[emb],
-        metadatas=[{"normalized_text": norm}],
-    )
+            ids=[mem_id],
+            documents=[text],
+            embeddings=[emb],
+            metadatas=[metadata],
+        )
         return mem_id
     
     

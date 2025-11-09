@@ -1,24 +1,19 @@
-from typing import List
+from typing import List, Optional
 from uuid import uuid4
+from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
-from .types import (
-    EpisodicConversationalCreate, EpisodicSummaryCreate, EpisodicObservationCreate,
-    ProceduralAgentCreate, ProceduralToolCreate, ProceduralWorkflowCreate
-)
+from .types import LongTermMemory, LongTermType, LongTermMemoryUpdate
 
 COLS = {
-    # episodic sub-tables
-    "episodic_conversational": "lt_episodic_conversational",
-    "episodic_summaries": "lt_episodic_summaries",
-    "episodic_observations": "lt_episodic_observations",
-    # procedural sub-tables
-    "procedural_agent_store": "lt_procedural_agent_store",
-    "procedural_tool_store": "lt_procedural_tool_store",
-    "procedural_workflow_store": "lt_procedural_workflow_store",
+    "semantic": "lt_semantic",
+    "episodic": "lt_episodic",
+    "procedural": "lt_procedural",
 }
 
-class MongoLongTermStore:
+class LongTermStore:
+    """MongoDB-based Long Term Memory Store (Semantic, Episodic, Procedural)"""
+    
     def __init__(self, mongo_url: str, db_name: str = "memory"):
         self.client = AsyncIOMotorClient(mongo_url)
         self.db: AsyncIOMotorDatabase = self.client[db_name]
@@ -28,126 +23,142 @@ class MongoLongTermStore:
         if self._ready:
             return
        
-        for cname in (COLS["episodic_conversational"], COLS["episodic_summaries"], COLS["episodic_observations"]):
-            await self.db[cname].create_index([("agent_id",1), ("created_at",-1)])
-            await self.db[cname].create_index([("agent_id",1), ("tags",1)])
-        await self.db[COLS["episodic_conversational"]].create_index([("agent_id",1), ("conversation_id",1), ("created_at",1)])
-        await self.db[COLS["episodic_summaries"]].create_index([("agent_id",1), ("conversation_id",1), ("span_start",1), ("span_end",1)])
-        await self.db[COLS["episodic_observations"]].create_index([("agent_id",1), ("observation_id",1)])
-
+        # Common indexes for all long-term memory types
+        for col_name in COLS.values():
+            await self.db[col_name].create_index([("agent_id", 1), ("created_at", -1)])
+            await self.db[col_name].create_index([("agent_id", 1), ("message_id", 1)])
+            await self.db[col_name].create_index([("agent_id", 1), ("run_id", 1)])
+            await self.db[col_name].create_index([("agent_id", 1), ("tags", 1)])
         
-        await self.db[COLS["procedural_agent_store"]].create_index([("agent_id",1), ("name",1), ("version",-1)])
-        await self.db[COLS["procedural_tool_store"]].create_index([("agent_id",1), ("name",1), ("version",-1)])
-        await self.db[COLS["procedural_workflow_store"]].create_index([("agent_id",1), ("name",1), ("version",-1)])
+        # Episodic specific indexes
+        await self.db[COLS["episodic"]].create_index([("agent_id", 1), ("subtype", 1)])
+        await self.db[COLS["episodic"]].create_index([("agent_id", 1), ("conversation_id", 1)])
+        await self.db[COLS["episodic"]].create_index([("agent_id", 1), ("workflow_id", 1)])
+        await self.db[COLS["episodic"]].create_index([("workflow_id", 1)])
+        
+        # Procedural specific indexes
+        await self.db[COLS["procedural"]].create_index([("agent_id", 1), ("name", 1), ("version", -1)])
+        await self.db[COLS["procedural"]].create_index([("agent_id", 1), ("subtype", 1)])
 
         self._ready = True
 
-    
-    async def create_ep_conversational(self, m: EpisodicConversationalCreate) -> str:
+    async def create(self, m: LongTermMemory) -> str:
+        """Create a long-term memory entry"""
         await self.ensure_indexes()
         doc = m.model_dump()
         doc["id"] = str(uuid4())
-        await self.db[COLS["episodic_conversational"]].insert_one(doc)
+        
+        # Store in appropriate collection based on memory_type
+        collection = COLS[m.memory_type.value]
+        await self.db[collection].insert_one(doc)
         return doc["id"]
 
-    async def create_ep_summary(self, m: EpisodicSummaryCreate) -> str:
+    async def update(self, update: LongTermMemoryUpdate) -> Optional[dict]:
+        """Update a long-term memory by agent_id and message_id"""
         await self.ensure_indexes()
-        doc = m.model_dump()
-        doc["id"] = str(uuid4())
-        await self.db[COLS["episodic_summaries"]].insert_one(doc)
-        return doc["id"]
+        
+        collection = COLS[update.memory_type.value]
+        
+        # Find the document
+        query = {
+            "agent_id": update.agent_id,
+            "message_id": update.message_id
+        }
+        
+        existing = await self.db[collection].find_one(query, {"_id": 0})
+        
+        if not existing:
+            return None
+        
+        # Prepare update operations
+        update_ops = {}
+        
+        # Update memory dictionary
+        if update.memory_updates:
+            for key, value in update.memory_updates.items():
+                update_ops[f"memory.{key}"] = value
+        
+        # Remove keys from memory
+        unset_ops = {}
+        for key in update.remove_keys:
+            unset_ops[f"memory.{key}"] = ""
+        
+        # Update metadata
+        if update.metadata_updates:
+            for key, value in update.metadata_updates.items():
+                update_ops[f"metadata.{key}"] = value
+        
+        # Update other fields
+        if update.tags is not None:
+            update_ops["tags"] = update.tags
+        if update.normalized_text is not None:
+            update_ops["normalized_text"] = update.normalized_text
+        if update.subtype is not None:
+            update_ops["subtype"] = update.subtype
+        if update.conversation_id is not None:
+            update_ops["conversation_id"] = update.conversation_id
+        if update.workflow_id is not None:
+            update_ops["workflow_id"] = update.workflow_id
+        if update.name is not None:
+            update_ops["name"] = update.name
+        if update.status is not None:
+            update_ops["status"] = update.status
+        
+        # Update config for procedural
+        if update.config_updates:
+            for key, value in update.config_updates.items():
+                update_ops[f"config.{key}"] = value
+        
+        # Increment version
+        update_ops["version"] = existing.get("version", 1) + 1
+        update_ops["updated_at"] = datetime.utcnow()
+        
+        # Perform update
+        mongo_update = {}
+        if update_ops:
+            mongo_update["$set"] = update_ops
+        if unset_ops:
+            mongo_update["$unset"] = unset_ops
+        
+        if mongo_update:
+            await self.db[collection].update_one(query, mongo_update)
+        
+        # Return updated document
+        updated = await self.db[collection].find_one(query, {"_id": 0})
+        return updated
 
-    async def create_ep_observation(self, m: EpisodicObservationCreate) -> str:
+    async def get_many(
+        self,
+        memory_type: LongTermType,
+        agent_id: str,
+        subtype: Optional[str] = None,
+        message_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        name: Optional[str] = None
+    ) -> List[dict]:
+        """Retrieve long-term memories with filters"""
         await self.ensure_indexes()
-        doc = m.model_dump()
-        doc["id"] = str(uuid4())
-        await self.db[COLS["episodic_observations"]].insert_one(doc)
-        return doc["id"]
-    
- 
-
-   
-    async def create_proc_agent(self, m: ProceduralAgentCreate) -> str:
-        await self.ensure_indexes()
-        doc = m.model_dump()
-        doc["id"] = str(uuid4())
-        await self.db[COLS["procedural_agent_store"]].insert_one(doc)
-        return doc["id"]
-
-    async def create_proc_tool(self, m: ProceduralToolCreate) -> str:
-        await self.ensure_indexes()
-        doc = m.model_dump()
-        doc["id"] = str(uuid4())
-        await self.db[COLS["procedural_tool_store"]].insert_one(doc)
-        return doc["id"]
-
-    async def create_proc_workflow(self, m: ProceduralWorkflowCreate) -> str:
-        await self.ensure_indexes()
-        doc = m.model_dump()
-        doc["id"] = str(uuid4())
-        await self.db[COLS["procedural_workflow_store"]].insert_one(doc)
-        return doc["id"]
-    
-    # --------- Ret  ---------
-    
-
-    async def list_ep_conversational(self, agent_id: str, limit: int = 50) -> List[dict]:
-        await self.ensure_indexes()
+        
+        query = {"agent_id": agent_id}
+        if subtype:
+            query["subtype"] = subtype
+        if message_id:
+            query["message_id"] = message_id
+        if run_id:
+            query["run_id"] = run_id
+        if workflow_id:
+            query["workflow_id"] = workflow_id
+        if conversation_id:
+            query["conversation_id"] = conversation_id
+        if name:
+            query["name"] = name
+            
+        collection = COLS[memory_type.value]
         cur = (
-            self.db[COLS["episodic_conversational"]]
-            .find({"agent_id": agent_id}, {"_id": 0})  
+            self.db[collection]
+            .find(query, {"_id": 0})
             .sort("created_at", -1)
-            .limit(limit)
         )
         return await cur.to_list(length=None)
-
-    async def list_ep_summaries(self, agent_id: str, limit: int = 50) -> List[dict]:
-        await self.ensure_indexes()
-        cur = (
-            self.db[COLS["episodic_summaries"]]
-            .find({"agent_id": agent_id}, {"_id": 0})
-            .sort("created_at", -1)
-            .limit(limit)
-        )
-        return await cur.to_list(length=None)
-
-    async def list_ep_observations(self, agent_id: str, limit: int = 50) -> List[dict]:
-        await self.ensure_indexes()
-        cur = (
-            self.db[COLS["episodic_observations"]]
-            .find({"agent_id": agent_id}, {"_id": 0})
-            .sort("created_at", -1)
-            .limit(limit)
-        )
-        return await cur.to_list(length=None)
-
-    async def list_proc_agents(self, agent_id: str, limit: int = 50) -> List[dict]:
-        await self.ensure_indexes()
-        cur = (
-            self.db[COLS["procedural_agent_store"]]
-            .find({"agent_id": agent_id}, {"_id": 0})
-            .sort("created_at", -1)
-            .limit(limit)
-        )
-        return await cur.to_list(length=None)
-
-    async def list_proc_tools(self, agent_id: str, limit: int = 50) -> List[dict]:
-        await self.ensure_indexes()
-        cur = (
-            self.db[COLS["procedural_tool_store"]]
-            .find({"agent_id": agent_id}, {"_id": 0})
-            .sort("created_at", -1)
-            .limit(limit)
-        )
-        return await cur.to_list(length=None)
-
-    async def list_proc_workflows(self, agent_id: str, limit: int = 50) -> List[dict]:
-        await self.ensure_indexes()
-        cur = (
-            self.db[COLS["procedural_workflow_store"]]
-            .find({"agent_id": agent_id}, {"_id": 0})
-            .sort("created_at", -1)
-            .limit(limit)
-        )
-        return await cur.to_list(length=None)
-
