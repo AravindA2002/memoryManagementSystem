@@ -25,7 +25,7 @@ class ShortTermMemory(BaseModel):
     )
     memory_type: ShortTermType = Field(..., description="Type of short-term memory")
     ttl: int = Field(default=600, description="Time to live in seconds (default: 600)")
-    message_id: Optional[str] = Field(default=None, description="Message ID for tracking")
+    message_id: Optional[str] = Field(default=None, description="Auto-generated message ID (internal use)")
     run_id: Optional[str] = Field(default=None, description="Run ID for tracking")
     
     # Working memory specific fields (optional, only used when memory_type=WORKING)
@@ -76,7 +76,7 @@ class LongTermMemory(BaseModel):
         description="Key-value pairs representing the memory content"
     )
     memory_type: LongTermType = Field(..., description="Type of long-term memory")
-    message_id: Optional[str] = Field(default=None, description="Message ID for tracking")
+    message_id: Optional[str] = Field(default=None, description="Auto-generated message ID (internal use)")
     run_id: Optional[str] = Field(default=None, description="Run ID for tracking")
     tags: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict, example={})

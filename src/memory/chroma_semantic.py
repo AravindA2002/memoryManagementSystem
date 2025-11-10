@@ -1,8 +1,8 @@
-# src/memory/chroma_semantic.py
+
 
 import re
 import uuid
-from typing import Optional
+from typing import Optional, List
 import chromadb
 from chromadb.config import Settings, DEFAULT_TENANT, DEFAULT_DATABASE
 from ..config.settings import CHROMA_BASE_URL, CHROMA_HOST, CHROMA_PORT
@@ -105,8 +105,84 @@ class ChromaSemanticStore:
             metadatas=[metadata],
         )
         return mem_id
-    
-    
+
+    async def update(
+        self,
+        agent_id: str,
+        message_id: str,
+        text: str,
+        normalized_text: str,
+        embed_fn
+    ) -> bool:
+        
+        col = self.get_or_create_collection(agent_id)
+        
+        # Find the entry by message_id
+        try:
+            results = col.get(where={"message_id": message_id})
+            
+            if not results or not results.get("ids"):
+                return False
+            
+            # Get the old ID
+            old_id = results["ids"][0]
+            
+            # Delete the old entry
+            col.delete(ids=[old_id])
+            
+            # Add new entry with updated content
+            norm = _norm_text(normalized_text, text)
+            emb = embed_fn(norm)
+            new_id = str(uuid.uuid4())
+            
+            col.add(
+                ids=[new_id],
+                documents=[text],
+                embeddings=[emb],
+                metadatas={"normalized_text": norm, "message_id": message_id},
+            )
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error updating semantic memory in ChromaDB: {e}")
+            return False
+
+    async def delete_by_message_id(self, agent_id: str, message_id: str) -> bool:
+        
+        try:
+            col = self.get_or_create_collection(agent_id)
+            results = col.get(where={"message_id": message_id})
+            
+            if not results or not results.get("ids"):
+                return False
+            
+            col.delete(ids=results["ids"])
+            return True
+            
+        except Exception as e:
+            print(f"Error deleting semantic memory from ChromaDB: {e}")
+            return False
+
+    async def delete_all(self, agent_id: str) -> int:
+       
+        try:
+            col = self.get_or_create_collection(agent_id)
+            
+            # Get all entries
+            results = col.get()
+            count = len(results.get("ids", []))
+            
+            if count > 0:
+                # Delete collection and recreate empty
+                self.delete_collection(agent_id)
+                self.get_or_create_collection(agent_id)
+            
+            return count
+            
+        except Exception as e:
+            print(f"Error deleting all semantic memories from ChromaDB: {e}")
+            return 0
 
     async def similarity_search(self, agent_id: str, query: str, embed_fn, k: int = 10):
         col = self.get_or_create_collection(agent_id)

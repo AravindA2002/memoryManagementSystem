@@ -21,7 +21,6 @@ router = APIRouter(prefix="/short-term", tags=["short-term"])
                             "memory": {"type": "object"},
                             "memory_type": {"type": "string", "enum": ["cache"], "default": "cache"},
                             "ttl": {"type": "integer", "default": 600},
-                            "message_id": {"type": "string"},
                             "run_id": {"type": "string"}
                         }
                     }
@@ -37,6 +36,7 @@ async def add_cache(
     """
     Store short-term cache memory in Redis with TTL (default: 600 seconds).
     memory_type is automatically set to 'cache' for this endpoint.
+    Returns message_id which you can use for retrieval and updates.
     """
     m.memory_type = ShortTermType.CACHE  # Force cache type
     return await svc.add_short_term(m)
@@ -106,7 +106,6 @@ async def update_cache(
                             "memory": {"type": "object"},
                             "memory_type": {"type": "string", "enum": ["working"], "default": "working"},
                             "ttl": {"type": "integer", "default": 600},
-                            "message_id": {"type": "string"},
                             "run_id": {"type": "string"},
                             "workflow_id": {"type": "string"},
                             "stages": {"type": "array", "items": {"type": "string"}},
@@ -127,6 +126,7 @@ async def add_working(
     """
     Store short-term working memory in Redis with workflow context and TTL (default: 600 seconds).
     memory_type is automatically set to 'working' for this endpoint.
+    Returns message_id which you can use for retrieval and updates.
     Include workflow_id, stages, current_stage, context_log_summary, user_query for workflow tracking.
     """
     m.memory_type = ShortTermType.WORKING  # Force working type
@@ -196,6 +196,7 @@ async def persist_working_memory(
     """
     Persist all working memories for a specific workflow_id from Redis (short-term) 
     to MongoDB (long-term storage as episodic memory with subtype='working_persisted').
+    Returns list of message_ids that were persisted.
     """
     persisted_ids = await svc.persist_working_memory(agent_id, workflow_id)
     return {
@@ -203,5 +204,33 @@ async def persist_working_memory(
         "agent_id": agent_id,
         "workflow_id": workflow_id,
         "persisted_count": len(persisted_ids),
-        "persisted_ids": persisted_ids
+        "persisted_message_ids": persisted_ids
     }
+
+# ==================== DELETE OPERATIONS ====================
+
+@router.delete("/cache", summary="Delete cache memory")
+async def delete_cache(
+    agent_id: str = Query(..., description="Agent ID (required)"),
+    message_id: Optional[str] = Query(None, description="Specific message ID to delete (optional - if not provided, flushes all cache)"),
+    svc: MemoryService = Depends(get_memory_service),
+):
+    """
+    Delete cache memory from Redis.
+    - If message_id is provided: Deletes specific memory
+    - If message_id is NOT provided: Flushes ALL cache memories for the agent
+    """
+    return await svc.delete_short_term(ShortTermType.CACHE, agent_id, message_id)
+
+@router.delete("/working", summary="Delete working memory")
+async def delete_working(
+    agent_id: str = Query(..., description="Agent ID (required)"),
+    message_id: Optional[str] = Query(None, description="Specific message ID to delete (optional - if not provided, flushes all working memory)"),
+    svc: MemoryService = Depends(get_memory_service),
+):
+    """
+    Delete working memory from Redis.
+    - If message_id is provided: Deletes specific memory
+    - If message_id is NOT provided: Flushes ALL working memories for the agent
+    """
+    return await svc.delete_short_term(ShortTermType.WORKING, agent_id, message_id)

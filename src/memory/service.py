@@ -7,7 +7,8 @@ from ..config.settings import (
     REDIS_URL, MONGO_URL, MONGO_DB, CHROMA_HOST, CHROMA_PORT
 )
 import json
-from typing import Optional, List
+import uuid
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from .types import (
@@ -30,11 +31,31 @@ class MemoryService:
         self.embed = openai_embed_fn or openai_embed
         self.associative = Neo4jAssociativeStore()
 
+    @staticmethod
+    def _generate_message_id() -> str:
+        """Generate a unique message ID with timestamp prefix for better sorting"""
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]  # Short UUID
+        return f"msg_{timestamp}_{unique_id}"
+
     # ==================== SHORT TERM MEMORY ====================
     
-    async def add_short_term(self, m: ShortTermMemory):
+    async def add_short_term(self, m: ShortTermMemory) -> Dict[str, Any]:
         """Add any short-term memory (cache or working)"""
-        return await self.short_term.create(m)
+        # Auto-generate message_id
+        message_id = self._generate_message_id()
+        m.message_id = message_id
+        
+        result = await self.short_term.create(m)
+        
+        # Return message_id for user to use in retrieval/update
+        return {
+            "message_id": message_id,
+            "agent_id": m.agent_id,
+            "memory_type": m.memory_type.value,
+            "created_at": result.created_at.isoformat(),
+            "ttl": m.ttl
+        }
     
     async def update_short_term(self, update: ShortTermMemoryUpdate):
         """Update short-term memory by agent_id and message_id"""
@@ -51,10 +72,41 @@ class MemoryService:
         """Retrieve short-term memories from Redis"""
         return await self.short_term.get_many(memory_type, agent_id, message_id, run_id, workflow_id)
 
+    async def delete_short_term(
+        self,
+        memory_type: ShortTermType,
+        agent_id: str,
+        message_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Delete short-term memory - specific message_id or all (flush)"""
+        if message_id:
+            # Delete specific memory
+            deleted = await self.short_term.delete_by_message_id(memory_type, agent_id, message_id)
+            return {
+                "status": "deleted" if deleted else "not_found",
+                "agent_id": agent_id,
+                "memory_type": memory_type.value,
+                "message_id": message_id,
+                "deleted_count": 1 if deleted else 0
+            }
+        else:
+            # Flush all memories of this type for this agent
+            count = await self.short_term.delete_all(memory_type, agent_id)
+            return {
+                "status": "flushed",
+                "agent_id": agent_id,
+                "memory_type": memory_type.value,
+                "deleted_count": count
+            }
+
     # ==================== LONG TERM MEMORY ====================
     
-    async def add_long_term(self, m: LongTermMemory) -> str:
+    async def add_long_term(self, m: LongTermMemory) -> Dict[str, Any]:
         """Add any long-term memory (semantic, episodic, or procedural)"""
+        
+        # Auto-generate message_id
+        message_id = self._generate_message_id()
+        m.message_id = message_id
         
         # Handle semantic memory with embeddings
         if m.memory_type == LongTermType.SEMANTIC:
@@ -66,21 +118,44 @@ class MemoryService:
                 agent_id=m.agent_id,
                 text=text_to_embed,
                 normalized_text=normalized,
-                embed_fn=self.embed
+                embed_fn=self.embed,
+                message_id=message_id
             )
         
         # Store in MongoDB
-        return await self.long_term.create(m)
+        await self.long_term.create(m)
+        
+        # Return message_id for user to use in retrieval/update
+        return {
+            "message_id": message_id,
+            "agent_id": m.agent_id,
+            "memory_type": m.memory_type.value,
+            "subtype": m.subtype,
+            "created_at": m.created_at.isoformat()
+        }
     
     async def update_long_term(self, update: LongTermMemoryUpdate):
         """Update long-term memory by agent_id and message_id"""
+        # Update in MongoDB first
         result = await self.long_term.update(update)
         
-        # If semantic memory was updated, update Chroma as well
-        if result and update.memory_type == LongTermType.SEMANTIC:
-            # Note: ChromaDB doesn't support update, so we'd need to delete and re-add
-            # For now, just update MongoDB. Consider implementing delete+add for Chroma if needed.
-            pass
+        if not result:
+            return None
+        
+        # If semantic memory was updated, update Chroma as well (delete + re-add)
+        if update.memory_type == LongTermType.SEMANTIC:
+            # Reconstruct the text from updated memory
+            text_to_embed = json.dumps(result.get("memory", {}), sort_keys=True)
+            normalized = result.get("normalized_text") or text_to_embed
+            
+            # Update in Chroma (delete and re-add)
+            await self.semantic.update(
+                agent_id=update.agent_id,
+                message_id=update.message_id,
+                text=text_to_embed,
+                normalized_text=normalized,
+                embed_fn=self.embed
+            )
         
         return result
     
@@ -100,6 +175,43 @@ class MemoryService:
             memory_type, agent_id, subtype, message_id, 
             run_id, workflow_id, conversation_id, name
         )
+    
+    async def delete_long_term(
+        self,
+        memory_type: LongTermType,
+        agent_id: str,
+        message_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Delete long-term memory - specific message_id or all of a type"""
+        if message_id:
+            # Delete specific memory
+            deleted = await self.long_term.delete_by_message_id(memory_type, agent_id, message_id)
+            
+            # Also delete from Chroma if semantic
+            if deleted and memory_type == LongTermType.SEMANTIC:
+                await self.semantic.delete_by_message_id(agent_id, message_id)
+            
+            return {
+                "status": "deleted" if deleted else "not_found",
+                "agent_id": agent_id,
+                "memory_type": memory_type.value,
+                "message_id": message_id,
+                "deleted_count": 1 if deleted else 0
+            }
+        else:
+            # Delete all memories of this type for this agent
+            count = await self.long_term.delete_all(memory_type, agent_id)
+            
+            # Also delete from Chroma if semantic
+            if memory_type == LongTermType.SEMANTIC:
+                await self.semantic.delete_all(agent_id)
+            
+            return {
+                "status": "deleted_all",
+                "agent_id": agent_id,
+                "memory_type": memory_type.value,
+                "deleted_count": count
+            }
     
     async def search_semantic(self, agent_id: str, query: str, k: int = 10):
         """Search semantic memories using vector similarity"""
@@ -124,7 +236,6 @@ class MemoryService:
                 memory=wm.memory,
                 memory_type=LongTermType.EPISODIC,
                 subtype="working_persisted",
-                message_id=wm.message_id,
                 run_id=wm.run_id,
                 workflow_id=wm.workflow_id,
                 stages=wm.stages,
@@ -136,7 +247,10 @@ class MemoryService:
                 original_ttl=wm.ttl
             )
             
+            # Use the existing message_id from working memory
+            long_term_mem.message_id = wm.message_id
+            
             doc_id = await self.long_term.create(long_term_mem)
-            persisted_ids.append(doc_id)
+            persisted_ids.append(wm.message_id)  # Return message_id instead of doc_id
         
         return persisted_ids

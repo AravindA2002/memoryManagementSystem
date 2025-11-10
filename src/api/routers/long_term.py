@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, HTTPException
-from typing import Optional, Annotated
-from pydantic import Field as PydanticField
+from typing import Optional
 from ..deps import get_memory_service
 from ...memory.service import MemoryService
 from ...memory.types import LongTermMemory, LongTermType, LongTermMemoryUpdate
@@ -20,9 +19,10 @@ async def add_semantic(
     """
     Store semantic memory permanently in MongoDB and Chroma for vector search.
     memory_type is automatically set to 'semantic' for this endpoint.
+    Returns message_id which you can use for retrieval and updates.
     """
     m.memory_type = LongTermType.SEMANTIC  # Force semantic type
-    return {"id": await svc.add_long_term(m)}
+    return await svc.add_long_term(m)
 
 @router.get("/semantic", summary="Search semantic memories")
 async def search_semantic(
@@ -51,7 +51,7 @@ async def update_semantic(
     
     return {"status": "updated", "memory": result}
 
-# ==================== EPISODIC ====================
+# ==================== EPISODIC (APPEND-ONLY) ====================
 
 @router.post("/episodic", summary="Add episodic memory", 
     openapi_extra={
@@ -65,7 +65,6 @@ async def update_semantic(
                             "agent_id": {"type": "string"},
                             "memory": {"type": "object"},
                             "memory_type": {"type": "string", "enum": ["episodic"], "default": "episodic"},
-                            "message_id": {"type": "string"},
                             "run_id": {"type": "string"},
                             "tags": {"type": "array", "items": {"type": "string"}},
                             "metadata": {"type": "object"},
@@ -93,8 +92,11 @@ async def add_episodic(
     svc: MemoryService = Depends(get_memory_service)
 ):
     """
-    Store episodic memory permanently in MongoDB.
+    Store episodic memory permanently in MongoDB (APPEND-ONLY).
     memory_type is automatically set to 'episodic' for this endpoint.
+    Returns message_id which you can use for retrieval.
+    
+    Episodic memories are immutable and cannot be updated after creation.
     
     Available Subtypes:
     - conversational: Chat/dialogue interactions
@@ -112,7 +114,7 @@ async def add_episodic(
             detail="Cannot manually create 'working_persisted' episodic memory. Use POST /short-term/working/persist to persist working memory."
         )
     
-    return {"id": await svc.add_long_term(m)}
+    return await svc.add_long_term(m)
 
 @router.get("/episodic", summary="Get episodic memories")
 async def get_episodic(
@@ -124,62 +126,17 @@ async def get_episodic(
     run_id: Optional[str] = Query(None, description="Filter by run ID"),
     svc: MemoryService = Depends(get_memory_service),
 ):
-    """Retrieve episodic memories from MongoDB"""
+    """
+    Retrieve episodic memories from MongoDB.
+    
+    Episodic memories are append-only and cannot be modified after creation.
+    """
     return await svc.get_long_term(
         LongTermType.EPISODIC, agent_id, subtype, 
         message_id, run_id, workflow_id, conversation_id
     )
 
-@router.patch("/episodic", summary="Update episodic memory",
-    openapi_extra={
-        "requestBody": {
-            "content": {
-                "application/json": {
-                    "schema": {
-                        "type": "object",
-                        "required": ["agent_id", "message_id"],
-                        "properties": {
-                            "agent_id": {"type": "string"},
-                            "message_id": {"type": "string"},
-                            "memory_type": {"type": "string", "enum": ["episodic"], "default": "episodic"},
-                            "memory_updates": {"type": "object"},
-                            "remove_keys": {"type": "array", "items": {"type": "string"}},
-                            "tags": {"type": "array", "items": {"type": "string"}},
-                            "metadata_updates": {"type": "object"},
-                            "subtype": {"type": "string"},
-                            "conversation_id": {"type": "string"},
-                            "workflow_id": {"type": "string"}
-                        }
-                    }
-                }
-            }
-        }
-    }
-)
-async def update_episodic(
-    update: LongTermMemoryUpdate,
-    svc: MemoryService = Depends(get_memory_service)
-):
-    """
-    Update episodic memory by agent_id and message_id.
-    memory_type is automatically set to 'episodic' for this endpoint.
-    
-    Note: Cannot update subtype to 'working_persisted' manually.
-    """
-    update.memory_type = LongTermType.EPISODIC  # Force episodic type
-    
-    # Prevent changing subtype to working_persisted
-    if update.subtype == "working_persisted":
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot change subtype to 'working_persisted'. This subtype is only created through persistence."
-        )
-    
-    result = await svc.update_long_term(update)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Memory not found")
-    
-    return {"status": "updated", "memory": result}
+# NOTE: No PATCH endpoint for episodic - it's append-only!
 
 # ==================== PROCEDURAL ====================
 
@@ -195,7 +152,6 @@ async def update_episodic(
                             "agent_id": {"type": "string"},
                             "memory": {"type": "object"},
                             "memory_type": {"type": "string", "enum": ["procedural"], "default": "procedural"},
-                            "message_id": {"type": "string"},
                             "run_id": {"type": "string"},
                             "tags": {"type": "array", "items": {"type": "string"}},
                             "metadata": {"type": "object"},
@@ -220,10 +176,11 @@ async def add_procedural(
     """
     Store procedural memory permanently in MongoDB.
     memory_type is automatically set to 'procedural' for this endpoint.
+    Returns message_id which you can use for retrieval and updates.
     Use subtype: 'agent_store', 'tool_store', or 'workflow_store'.
     """
     m.memory_type = LongTermType.PROCEDURAL  # Force procedural type
-    return {"id": await svc.add_long_term(m)}
+    return await svc.add_long_term(m)
 
 @router.get("/procedural", summary="Get procedural memories")
 async def get_procedural(
@@ -325,3 +282,44 @@ def find_path(
 ):
     """Find shortest path between two entities in Neo4j graph"""
     return {"a": a, "b": b, "paths": svc.associative.path_between(a, b, max_hops)}
+
+# ==================== DELETE OPERATIONS ====================
+
+@router.delete("/semantic", summary="Delete semantic memory")
+async def delete_semantic(
+    agent_id: str = Query(..., description="Agent ID (required)"),
+    message_id: Optional[str] = Query(None, description="Specific message ID to delete (optional - if not provided, deletes ALL semantic memories)"),
+    svc: MemoryService = Depends(get_memory_service)
+):
+    """
+    Delete semantic memory from MongoDB (and Chroma).
+    - If message_id is provided: Deletes specific memory
+    - If message_id is NOT provided: Deletes ALL semantic memories for the agent
+    """
+    return await svc.delete_long_term(LongTermType.SEMANTIC, agent_id, message_id)
+
+@router.delete("/episodic", summary="Delete episodic memory")
+async def delete_episodic(
+    agent_id: str = Query(..., description="Agent ID (required)"),
+    message_id: Optional[str] = Query(None, description="Specific message ID to delete (optional - if not provided, deletes ALL episodic memories)"),
+    svc: MemoryService = Depends(get_memory_service)
+):
+    """
+    Delete episodic memory from MongoDB.
+    - If message_id is provided: Deletes specific memory
+    - If message_id is NOT provided: Deletes ALL episodic memories for the agent
+    """
+    return await svc.delete_long_term(LongTermType.EPISODIC, agent_id, message_id)
+
+@router.delete("/procedural", summary="Delete procedural memory")
+async def delete_procedural(
+    agent_id: str = Query(..., description="Agent ID (required)"),
+    message_id: Optional[str] = Query(None, description="Specific message ID to delete (optional - if not provided, deletes ALL procedural memories)"),
+    svc: MemoryService = Depends(get_memory_service)
+):
+    """
+    Delete procedural memory from MongoDB.
+    - If message_id is provided: Deletes specific memory
+    - If message_id is NOT provided: Deletes ALL procedural memories for the agent
+    """
+    return await svc.delete_long_term(LongTermType.PROCEDURAL, agent_id, message_id)

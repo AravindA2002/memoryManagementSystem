@@ -129,11 +129,48 @@ class ShortTermStore:
             await self.r.zrem(idx, *to_prune)
         return results
 
-    async def delete(self, mem_type: ShortTermType, agent_id: str, id_: str) -> int:
-        key = self._key(mem_type, agent_id, id_)
+    async def delete_by_message_id(
+        self, 
+        mem_type: ShortTermType, 
+        agent_id: str, 
+        message_id: str
+    ) -> bool:
+        """Delete a specific memory by message_id"""
         idx = self._idx(mem_type, agent_id)
+        ids = await self.r.zrevrange(idx, 0, -1)
+        
+        for id_ in ids:
+            key = self._key(mem_type, agent_id, id_)
+            raw = await self.r.get(key)
+            if raw is None:
+                continue
+                
+            data = json.loads(raw)
+            
+            # Check if this is the memory we want to delete
+            if data.get("message_id") == message_id:
+                pipe = self.r.pipeline()
+                pipe.delete(key)
+                pipe.zrem(idx, id_)
+                await pipe.execute()
+                return True
+        
+        return False
+
+    async def delete_all(self, mem_type: ShortTermType, agent_id: str) -> int:
+        """Delete all memories of a specific type for an agent (flush cache)"""
+        idx = self._idx(mem_type, agent_id)
+        ids = await self.r.zrevrange(idx, 0, -1)
+        
+        if not ids:
+            return 0
+        
+        # Delete all keys and the index
         pipe = self.r.pipeline()
-        pipe.delete(key)
-        pipe.zrem(idx, id_)
-        res = await pipe.execute()
-        return int(res[0]) + int(res[1])
+        for id_ in ids:
+            key = self._key(mem_type, agent_id, id_)
+            pipe.delete(key)
+        pipe.delete(idx)
+        
+        await pipe.execute()
+        return len(ids)

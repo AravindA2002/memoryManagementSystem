@@ -162,3 +162,35 @@ class LongTermStore:
             .sort("created_at", -1)
         )
         return await cur.to_list(length=None)
+
+    async def delete_by_message_id(
+        self,
+        memory_type: LongTermType,
+        agent_id: str,
+        message_id: str
+    ) -> bool:
+        """Delete a specific memory by message_id"""
+        await self.ensure_indexes()
+        
+        collection = COLS[memory_type.value]
+        query = {
+            "agent_id": agent_id,
+            "message_id": message_id
+        }
+        
+        result = await self.db[collection].delete_one(query)
+        return result.deleted_count > 0
+
+    async def delete_all(
+        self,
+        memory_type: LongTermType,
+        agent_id: str
+    ) -> int:
+        """Delete all memories of a specific type for an agent"""
+        await self.ensure_indexes()
+        
+        collection = COLS[memory_type.value]
+        query = {"agent_id": agent_id}
+        
+        result = await self.db[collection].delete_many(query)
+        return result.deleted_count
