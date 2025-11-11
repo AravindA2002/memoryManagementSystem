@@ -19,7 +19,7 @@ app.add_middleware(
 
 app.include_router(short_term_router, prefix="/v1/memory", tags=["short-term"])
 app.include_router(long_term_router,  prefix="/v1/memory", tags=["long-term"])
-app.include_router(retrieval_router,  prefix="/v1/memory", tags=["retrieve"])
+#app.include_router(retrieval_router,  prefix="/v1/memory", tags=["retrieve"])
 
 @app.get("/health")
 async def health():

@@ -3,6 +3,7 @@ from .mongo_longterm import LongTermStore
 from .chroma_semantic import ChromaSemanticStore
 from .embeddings import openai_embed
 from .neo4j_associative import Neo4jAssociativeStore
+from .associative_wrapper import AssociativeMemoryWrapper
 from ..config.settings import (
     REDIS_URL, MONGO_URL, MONGO_DB, CHROMA_HOST, CHROMA_PORT
 )
@@ -29,7 +30,15 @@ class MemoryService:
         self.long_term = LongTermStore(mongo_url or MONGO_URL, mongo_db or MONGO_DB)
         self.semantic = chroma_semantic or ChromaSemanticStore(CHROMA_HOST, CHROMA_PORT)
         self.embed = openai_embed_fn or openai_embed
-        self.associative = Neo4jAssociativeStore()
+        try:
+            self.associative = Neo4jAssociativeStore()
+            self.associative_wrapper = AssociativeMemoryWrapper(self.associative)  # ← NEW
+            print("Neo4j and Associative Wrapper initialized successfully")
+        except Exception as e:
+            print(f"Neo4j connection failed: {e}")
+            print("Associative memory features will not work")
+            self.associative = None
+            self.associative_wrapper = None
 
     @staticmethod
     def _generate_message_id() -> str:
@@ -121,9 +130,61 @@ class MemoryService:
                 embed_fn=self.embed,
                 message_id=message_id
             )
-        
-        # Store in MongoDB
+
+            
+            associative_result = None
+            if self.associative_wrapper:
+                try:
+                    print(f"Auto-triggering associative wrapper for message_id: {message_id}")
+                    
+                    # Use the original memory text (non-embedded, human-readable)
+                    memory_text = json.dumps(m.memory, indent=2)
+                    
+                    # Process text to extract entities and relationships
+                    associative_result = self.associative_wrapper.process_text(
+                        text=memory_text,
+                        agent_id=m.agent_id,
+                        
+                    )
+                    
+                    print(f"Associative wrapper completed: {associative_result['entity_count']} entities, {associative_result['relationship_count']} relationships")
+                    
+                except Exception as e:
+                    print(f"Associative wrapper failed (non-fatal): {e}")
+                    # Don't fail the whole request if wrapper fails
+                    associative_result = {
+                        "status": "error",
+                        "error": str(e)
+                    }
+
+
+            response = {
+            "message_id": message_id,
+            "agent_id": m.agent_id,
+            "memory_type": m.memory_type.value,
+            "subtype": m.subtype,
+            "created_at": m.created_at.isoformat(),
+            "storage": "chromadb_only"  # ← Indicate where stored
+        }
+
+            if associative_result:
+                response["associative"] = {
+                    "status": associative_result.get("status"),
+                    "entities_created": associative_result.get("entity_count", 0),
+                    "relationships_created": associative_result.get("relationship_count", 0)
+                }
+                if associative_result.get("errors"):
+                    response["associative"]["errors"] = associative_result["errors"]
+                if associative_result.get("error"):
+                    response["associative"]["error_message"] = associative_result["error"]
+                    response["associative"]["error_type"] = associative_result.get("error_type")
+            
+            return response
+    
+        # For episodic and procedural - store in MongoDB only
         await self.long_term.create(m)
+        
+        
         
         # Return message_id for user to use in retrieval/update
         return {

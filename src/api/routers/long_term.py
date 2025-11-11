@@ -17,7 +17,7 @@ async def add_semantic(
     svc: MemoryService = Depends(get_memory_service)
 ):
     """
-    Store semantic memory permanently in MongoDB and Chroma for vector search.
+    Store semantic memory permanently in Chroma for vector search.
     memory_type is automatically set to 'semantic' for this endpoint.
     Returns message_id which you can use for retrieval and updates.
     """
