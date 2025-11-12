@@ -30,39 +30,41 @@ class MemoryService:
         self.long_term = LongTermStore(mongo_url or MONGO_URL, mongo_db or MONGO_DB)
         self.semantic = chroma_semantic or ChromaSemanticStore(CHROMA_HOST, CHROMA_PORT)
         self.embed = openai_embed_fn or openai_embed
+        
         try:
             self.associative = Neo4jAssociativeStore()
-            self.associative_wrapper = AssociativeMemoryWrapper(self.associative)  # ← NEW
-            print("Neo4j and Associative Wrapper initialized successfully")
+            self.associative_wrapper = AssociativeMemoryWrapper(self.associative)
+            print("✅ Neo4j and Associative Wrapper initialized successfully")
         except Exception as e:
-            print(f"Neo4j connection failed: {e}")
-            print("Associative memory features will not work")
+            print(f"⚠️ Neo4j connection failed: {e}")
+            print("⚠️ Associative memory features will not work")
             self.associative = None
             self.associative_wrapper = None
 
     @staticmethod
     def _generate_message_id() -> str:
-        """Generate a unique message ID with timestamp prefix for better sorting"""
-        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]  # Short UUID
+        """Generate a unique message ID with timestamp prefix (format: ddmmyyyyHHmm)"""
+        timestamp = datetime.utcnow().strftime("%d%m%Y%H%M")  # ddmmyyyyHHmm
+        unique_id = str(uuid.uuid4())[:8]
         return f"msg_{timestamp}_{unique_id}"
 
     # ==================== SHORT TERM MEMORY ====================
     
     async def add_short_term(self, m: ShortTermMemory) -> Dict[str, Any]:
         """Add any short-term memory (cache or working)"""
-        # Auto-generate message_id
         message_id = self._generate_message_id()
         m.message_id = message_id
         
         result = await self.short_term.create(m)
         
-        # Return message_id for user to use in retrieval/update
+        # Format created_at for response
+        created_at_str = result.created_at.strftime("%d-%m-%Y %H:%M")
+        
         return {
             "message_id": message_id,
             "agent_id": m.agent_id,
             "memory_type": m.memory_type.value,
-            "created_at": result.created_at.isoformat(),
+            "created_at": created_at_str,  # ← Formatted string
             "ttl": m.ttl
         }
     
@@ -89,7 +91,6 @@ class MemoryService:
     ) -> Dict[str, Any]:
         """Delete short-term memory - specific message_id or all (flush)"""
         if message_id:
-            # Delete specific memory
             deleted = await self.short_term.delete_by_message_id(memory_type, agent_id, message_id)
             return {
                 "status": "deleted" if deleted else "not_found",
@@ -99,7 +100,6 @@ class MemoryService:
                 "deleted_count": 1 if deleted else 0
             }
         else:
-            # Flush all memories of this type for this agent
             count = await self.short_term.delete_all(memory_type, agent_id)
             return {
                 "status": "flushed",
@@ -113,16 +113,15 @@ class MemoryService:
     async def add_long_term(self, m: LongTermMemory) -> Dict[str, Any]:
         """Add any long-term memory (semantic, episodic, or procedural)"""
         
-        # Auto-generate message_id
         message_id = self._generate_message_id()
         m.message_id = message_id
         
-        # Handle semantic memory with embeddings
+        # Handle semantic memory - ChromaDB only + auto-trigger associative wrapper
         if m.memory_type == LongTermType.SEMANTIC:
             text_to_embed = json.dumps(m.memory, sort_keys=True)
             normalized = m.normalized_text or text_to_embed
             
-            # Store in Chroma for semantic search
+            # Step 1: Store in ChromaDB for vector search
             await self.semantic.add(
                 agent_id=m.agent_id,
                 text=text_to_embed,
@@ -130,93 +129,82 @@ class MemoryService:
                 embed_fn=self.embed,
                 message_id=message_id
             )
-
             
+            # Step 2: AUTO-TRIGGER ASSOCIATIVE WRAPPER
             associative_result = None
             if self.associative_wrapper:
                 try:
-                    print(f"Auto-triggering associative wrapper for message_id: {message_id}")
+                    print(f"🤖 Auto-triggering associative wrapper for message_id: {message_id}")
                     
-                    # Use the original memory text (non-embedded, human-readable)
-                    memory_text = json.dumps(m.memory, indent=2)
+                    # Extract text from memory object
+                    if isinstance(m.memory, dict) and "text" in m.memory:
+                        memory_text = m.memory["text"]
+                    else:
+                        memory_text = json.dumps(m.memory, indent=2)
                     
-                    # Process text to extract entities and relationships
+                    print(f"📝 Text to analyze: {memory_text}")
+                    
+                    # Process text (SYNC call, no await)
                     associative_result = self.associative_wrapper.process_text(
                         text=memory_text,
-                        agent_id=m.agent_id,
-                        
+                        agent_id=m.agent_id
                     )
                     
-                    print(f"Associative wrapper completed: {associative_result['entity_count']} entities, {associative_result['relationship_count']} relationships")
+                    print(f"✅ Wrapper completed: {associative_result.get('entity_count', 0)} entities, {associative_result.get('relationship_count', 0)} relationships")
                     
                 except Exception as e:
-                    print(f"Associative wrapper failed (non-fatal): {e}")
-                    # Don't fail the whole request if wrapper fails
+                    print(f"⚠️ Associative wrapper failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    
                     associative_result = {
                         "status": "error",
-                        "error": str(e)
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "entity_count": 0,
+                        "relationship_count": 0
                     }
-
-
+            
+            # Return response
             response = {
-            "message_id": message_id,
-            "agent_id": m.agent_id,
-            "memory_type": m.memory_type.value,
-            "subtype": m.subtype,
-            "created_at": m.created_at.isoformat(),
-            "storage": "chromadb_only"  # ← Indicate where stored
-        }
-
+                "message_id": message_id,
+                "agent_id": m.agent_id,
+                "memory_type": m.memory_type.value,
+                "subtype": m.subtype,
+                "created_at": datetime.utcnow().strftime("%d-%m-%Y %H:%M"),
+                "storage": "chromadb_only"
+            }
+            
+            # Add associative results
             if associative_result:
                 response["associative"] = {
-                    "status": associative_result.get("status"),
+                    "status": associative_result.get("status", "error"),
                     "entities_created": associative_result.get("entity_count", 0),
                     "relationships_created": associative_result.get("relationship_count", 0)
                 }
-                if associative_result.get("errors"):
-                    response["associative"]["errors"] = associative_result["errors"]
                 if associative_result.get("error"):
-                    response["associative"]["error_message"] = associative_result["error"]
-                    response["associative"]["error_type"] = associative_result.get("error_type")
+                    response["associative"]["error"] = associative_result["error"]
             
             return response
-    
+        
         # For episodic and procedural - store in MongoDB only
         await self.long_term.create(m)
         
-        
-        
-        # Return message_id for user to use in retrieval/update
         return {
             "message_id": message_id,
             "agent_id": m.agent_id,
             "memory_type": m.memory_type.value,
             "subtype": m.subtype,
-            "created_at": m.created_at.isoformat()
+            "created_at": m.created_at.strftime("%d-%m-%Y %H:%M"),
+            "storage": "mongodb"
         }
     
     async def update_long_term(self, update: LongTermMemoryUpdate):
         """Update long-term memory by agent_id and message_id"""
-        # Update in MongoDB first
         result = await self.long_term.update(update)
         
-        if not result:
-            return None
-        
-        # If semantic memory was updated, update Chroma as well (delete + re-add)
-        if update.memory_type == LongTermType.SEMANTIC:
-            # Reconstruct the text from updated memory
-            text_to_embed = json.dumps(result.get("memory", {}), sort_keys=True)
-            normalized = result.get("normalized_text") or text_to_embed
-            
-            # Update in Chroma (delete and re-add)
-            await self.semantic.update(
-                agent_id=update.agent_id,
-                message_id=update.message_id,
-                text=text_to_embed,
-                normalized_text=normalized,
-                embed_fn=self.embed
-            )
+        if result:
+            result["storage"] = "mongodb"
         
         return result
     
@@ -243,75 +231,86 @@ class MemoryService:
         agent_id: str,
         message_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Delete long-term memory - specific message_id or all of a type"""
+        """Delete long-term memory"""
+        
+        # If semantic, delete only from ChromaDB
+        if memory_type == LongTermType.SEMANTIC:
+            if message_id:
+                deleted = await self.semantic.delete_by_message_id(agent_id, message_id)
+                
+                return {
+                    "status": "deleted" if deleted else "not_found",
+                    "agent_id": agent_id,
+                    "memory_type": memory_type.value,
+                    "message_id": message_id,
+                    "deleted_count": 1 if deleted else 0,
+                    "storage": "chromadb_only"
+                }
+            else:
+                count = await self.semantic.delete_all(agent_id)
+                
+                return {
+                    "status": "deleted_all",
+                    "agent_id": agent_id,
+                    "memory_type": memory_type.value,
+                    "deleted_count": count,
+                    "storage": "chromadb_only"
+                }
+        
+        # For episodic/procedural - delete from MongoDB
         if message_id:
-            # Delete specific memory
             deleted = await self.long_term.delete_by_message_id(memory_type, agent_id, message_id)
-            
-            # Also delete from Chroma if semantic
-            if deleted and memory_type == LongTermType.SEMANTIC:
-                await self.semantic.delete_by_message_id(agent_id, message_id)
             
             return {
                 "status": "deleted" if deleted else "not_found",
                 "agent_id": agent_id,
                 "memory_type": memory_type.value,
                 "message_id": message_id,
-                "deleted_count": 1 if deleted else 0
+                "deleted_count": 1 if deleted else 0,
+                "storage": "mongodb"
             }
         else:
-            # Delete all memories of this type for this agent
             count = await self.long_term.delete_all(memory_type, agent_id)
-            
-            # Also delete from Chroma if semantic
-            if memory_type == LongTermType.SEMANTIC:
-                await self.semantic.delete_all(agent_id)
             
             return {
                 "status": "deleted_all",
                 "agent_id": agent_id,
                 "memory_type": memory_type.value,
-                "deleted_count": count
+                "deleted_count": count,
+                "storage": "mongodb"
             }
     
     async def search_semantic(self, agent_id: str, query: str, k: int = 10):
         """Search semantic memories using vector similarity"""
         return await self.semantic.similarity_search(agent_id, query, self.embed, k)
 
-    # ==================== WORKING MEMORY PERSISTENCE ====================
-    
     async def persist_working_memory(self, agent_id: str, workflow_id: str) -> List[str]:
-        """
-        Persist working memories from short-term (Redis) to long-term (MongoDB)
-        """
-        # Get working memories from Redis
+        """Persist working memories from short-term (Redis) to long-term (MongoDB)"""
         working_memories = await self.short_term.get_many(
             ShortTermType.WORKING, agent_id, workflow_id=workflow_id
         )
         
         persisted_ids = []
         for wm in working_memories:
-            # Convert to long-term memory
             long_term_mem = LongTermMemory(
-                agent_id=wm.agent_id,
-                memory=wm.memory,
+                agent_id=wm["agent_id"],
+                memory=wm["memory"],
                 memory_type=LongTermType.EPISODIC,
                 subtype="working_persisted",
-                run_id=wm.run_id,
-                workflow_id=wm.workflow_id,
-                stages=wm.stages,
-                current_stage=wm.current_stage,
-                context_log_summary=wm.context_log_summary,
-                user_query=wm.user_query,
-                created_at=wm.created_at if isinstance(wm.created_at, datetime) else datetime.fromisoformat(wm.created_at),
+                run_id=wm.get("run_id"),
+                workflow_id=wm.get("workflow_id"),
+                stages=wm.get("stages", []),
+                current_stage=wm.get("current_stage"),
+                context_log_summary=wm.get("context_log_summary"),
+                user_query=wm.get("user_query"),
+                created_at=datetime.utcnow(),
                 persisted_at=datetime.utcnow(),
-                original_ttl=wm.ttl
+                original_ttl=wm["ttl"]
             )
             
-            # Use the existing message_id from working memory
-            long_term_mem.message_id = wm.message_id
+            long_term_mem.message_id = wm["message_id"]
             
-            doc_id = await self.long_term.create(long_term_mem)
-            persisted_ids.append(wm.message_id)  # Return message_id instead of doc_id
+            await self.long_term.create(long_term_mem)
+            persisted_ids.append(wm["message_id"])
         
         return persisted_ids

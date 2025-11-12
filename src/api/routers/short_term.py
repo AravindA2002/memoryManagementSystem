@@ -1,45 +1,45 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Body
+from fastapi.routing import APIRoute
 from typing import Optional
 from ...memory.service import MemoryService
 from ..deps import get_memory_service
-from ...memory.types import ShortTermMemory, ShortTermType, ShortTermMemoryUpdate
+from ...memory.types import (
+    ShortTermMemory, ShortTermType, ShortTermMemoryUpdate,
+    CacheMemory, WorkingMemory
+)
+from ..schemas.openapi_schemas import (
+    CACHE_POST_SCHEMA, CACHE_PATCH_SCHEMA,
+    WORKING_POST_SCHEMA, WORKING_PATCH_SCHEMA
+)
 
-router = APIRouter(prefix="/short-term", tags=["short-term"])
+class NoSchemaRoute(APIRoute):
+    """Custom route that doesn't generate schema from Pydantic models"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Remove model schema generation
+        if hasattr(self, 'body_field'):
+            self.body_field = None
+
+# Use custom route class
+router = APIRouter(prefix="/short-term", tags=["short-term"], route_class=NoSchemaRoute)
 
 # ==================== CACHE ====================
 
-@router.post("/cache", summary="Add cache memory",
-    openapi_extra={
-        "requestBody": {
-            "content": {
-                "application/json": {
-                    "schema": {
-                        "type": "object",
-                        "required": ["agent_id", "memory"],
-                        "properties": {
-                            "agent_id": {"type": "string"},
-                            "memory": {"type": "object"},
-                            "memory_type": {"type": "string", "enum": ["cache"], "default": "cache"},
-                            "ttl": {"type": "integer", "default": 600},
-                            "run_id": {"type": "string"}
-                        }
-                    }
-                }
-            }
-        }
-    }
-)
+@router.post("/cache", summary="Add cache memory", openapi_extra=CACHE_POST_SCHEMA)
 async def add_cache(
-    m: ShortTermMemory,
+    m: CacheMemory,
     svc: MemoryService = Depends(get_memory_service),
 ):
     """
-    Store short-term cache memory in Redis with TTL (default: 600 seconds).
-    memory_type is automatically set to 'cache' for this endpoint.
+    Store short-term cache memory in Redis with TTL (default: 600 seconds = 10 mins).
     Returns message_id which you can use for retrieval and updates.
+    
+    Clean schema: Only stores agent_id, memory, ttl, run_id (no unnecessary fields).
     """
-    m.memory_type = ShortTermType.CACHE  # Force cache type
-    return await svc.add_short_term(m)
+    # Convert to generic for service compatibility
+    
+    generic = ShortTermMemory(**m.model_dump())
+    return await svc.add_short_term(generic)
 
 @router.get("/cache", summary="Get cache memories")
 async def get_cache(
@@ -48,42 +48,27 @@ async def get_cache(
     run_id: Optional[str] = Query(None, description="Filter by run ID"),
     svc: MemoryService = Depends(get_memory_service),
 ):
-    """Retrieve short-term cache memories from Redis"""
+    """
+    Retrieve short-term cache memories from Redis.
+    
+    Returns clean schema with metadata:
+    - created_at: Always present
+    - updated_at: Only present if memory was updated
+    """
     return await svc.get_short_term(ShortTermType.CACHE, agent_id, message_id, run_id)
 
-@router.patch("/cache", summary="Update cache memory",
-    openapi_extra={
-        "requestBody": {
-            "content": {
-                "application/json": {
-                    "schema": {
-                        "type": "object",
-                        "required": ["agent_id", "message_id"],
-                        "properties": {
-                            "agent_id": {"type": "string"},
-                            "message_id": {"type": "string"},
-                            "memory_type": {"type": "string", "enum": ["cache"], "default": "cache"},
-                            "memory_updates": {"type": "object"},
-                            "remove_keys": {"type": "array", "items": {"type": "string"}},
-                            "ttl": {"type": "integer"}
-                        }
-                    }
-                }
-            }
-        }
-    }
-)
+@router.patch("/cache", summary="Update cache memory", openapi_extra=CACHE_PATCH_SCHEMA)
 async def update_cache(
-    update: ShortTermMemoryUpdate,
+    update: ShortTermMemoryUpdate ,
     svc: MemoryService = Depends(get_memory_service),
 ):
     """
     Update cache memory by agent_id and message_id.
-    memory_type is automatically set to 'cache' for this endpoint.
+    Sets updated_at timestamp in metadata.
     - memory_updates: Dict of key-value pairs to update or add
     - remove_keys: List of keys to remove from memory
     """
-    update.memory_type = ShortTermType.CACHE  # Force cache type
+    update.memory_type = ShortTermType.CACHE
     
     result = await svc.update_short_term(update)
     if result is None:
@@ -93,44 +78,20 @@ async def update_cache(
 
 # ==================== WORKING ====================
 
-@router.post("/working", summary="Add working memory",
-    openapi_extra={
-        "requestBody": {
-            "content": {
-                "application/json": {
-                    "schema": {
-                        "type": "object",
-                        "required": ["agent_id", "memory"],
-                        "properties": {
-                            "agent_id": {"type": "string"},
-                            "memory": {"type": "object"},
-                            "memory_type": {"type": "string", "enum": ["working"], "default": "working"},
-                            "ttl": {"type": "integer", "default": 600},
-                            "run_id": {"type": "string"},
-                            "workflow_id": {"type": "string"},
-                            "stages": {"type": "array", "items": {"type": "string"}},
-                            "current_stage": {"type": "string"},
-                            "context_log_summary": {"type": "string"},
-                            "user_query": {"type": "string"}
-                        }
-                    }
-                }
-            }
-        }
-    }
-)
+@router.post("/working", summary="Add working memory", openapi_extra=WORKING_POST_SCHEMA)
 async def add_working(
-    m: ShortTermMemory,
+    m: WorkingMemory ,
     svc: MemoryService = Depends(get_memory_service),
 ):
     """
-    Store short-term working memory in Redis with workflow context and TTL (default: 600 seconds).
-    memory_type is automatically set to 'working' for this endpoint.
-    Returns message_id which you can use for retrieval and updates.
-    Include workflow_id, stages, current_stage, context_log_summary, user_query for workflow tracking.
+    Store short-term working memory in Redis with workflow context (default TTL: 600s = 10 mins).
+    
+    Clean schema: Stores agent_id, memory, ttl, run_id, workflow_id, stages, 
+                  current_stage, context_log_summary, user_query.
     """
-    m.memory_type = ShortTermType.WORKING  # Force working type
-    return await svc.add_short_term(m)
+    # Convert to generic for service compatibility
+    generic = ShortTermMemory(**m.model_dump())
+    return await svc.add_short_term(generic)
 
 @router.get("/working", summary="Get working memories")
 async def get_working(
@@ -140,46 +101,26 @@ async def get_working(
     run_id: Optional[str] = Query(None, description="Filter by run ID"),
     svc: MemoryService = Depends(get_memory_service),
 ):
-    """Retrieve short-term working memories from Redis"""
+    """
+    Retrieve short-term working memories from Redis.
+    
+    Returns clean schema with workflow fields and metadata:
+    - created_at: Always present
+    - updated_at: Only present if memory was updated
+    """
     return await svc.get_short_term(ShortTermType.WORKING, agent_id, message_id, run_id, workflow_id)
 
-@router.patch("/working", summary="Update working memory",
-    openapi_extra={
-        "requestBody": {
-            "content": {
-                "application/json": {
-                    "schema": {
-                        "type": "object",
-                        "required": ["agent_id", "message_id"],
-                        "properties": {
-                            "agent_id": {"type": "string"},
-                            "message_id": {"type": "string"},
-                            "memory_type": {"type": "string", "enum": ["working"], "default": "working"},
-                            "memory_updates": {"type": "object"},
-                            "remove_keys": {"type": "array", "items": {"type": "string"}},
-                            "workflow_id": {"type": "string"},
-                            "stages": {"type": "array", "items": {"type": "string"}},
-                            "current_stage": {"type": "string"},
-                            "context_log_summary": {"type": "string"},
-                            "user_query": {"type": "string"},
-                            "ttl": {"type": "integer"}
-                        }
-                    }
-                }
-            }
-        }
-    }
-)
+@router.patch("/working", summary="Update working memory",openapi_extra=WORKING_PATCH_SCHEMA)
 async def update_working(
-    update: ShortTermMemoryUpdate,
+    update: ShortTermMemoryUpdate ,
     svc: MemoryService = Depends(get_memory_service),
 ):
     """
     Update working memory by agent_id and message_id.
-    memory_type is automatically set to 'working' for this endpoint.
-    Can update memory dictionary, workflow fields, and reset TTL.
+    Can update memory dict, workflow fields, and TTL.
+    Sets updated_at timestamp in metadata.
     """
-    update.memory_type = ShortTermType.WORKING  # Force working type
+    update.memory_type = ShortTermType.WORKING
     
     result = await svc.update_short_term(update)
     if result is None:
@@ -194,7 +135,7 @@ async def persist_working_memory(
     svc: MemoryService = Depends(get_memory_service),
 ):
     """
-    Persist all working memories for a specific workflow_id from Redis (short-term) 
+    Persist all working memories for a workflow from Redis (short-term) 
     to MongoDB (long-term storage as episodic memory with subtype='working_persisted').
     Returns list of message_ids that were persisted.
     """

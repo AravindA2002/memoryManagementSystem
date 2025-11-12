@@ -194,3 +194,5 @@ class LongTermStore:
         
         result = await self.db[collection].delete_many(query)
         return result.deleted_count
+    
+    
