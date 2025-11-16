@@ -136,17 +136,14 @@ async def persist_working_memory(
 ):
     """
     Persist all working memories for a workflow from Redis (short-term) 
-    to MongoDB (long-term storage as episodic memory with subtype='working_persisted').
+    to MongoDB (long-term storage in separate lt_working_persisted collection).
+    
+    NEW: Working persisted memories are now stored in their own collection
+    with the same schema as short-term working memory, NOT under episodic.
+    
     Returns list of message_ids that were persisted.
     """
-    persisted_ids = await svc.persist_working_memory(agent_id, workflow_id)
-    return {
-        "status": "success",
-        "agent_id": agent_id,
-        "workflow_id": workflow_id,
-        "persisted_count": len(persisted_ids),
-        "persisted_message_ids": persisted_ids
-    }
+    return await svc.persist_working_memory(agent_id, workflow_id)
 
 # ==================== DELETE OPERATIONS ====================
 

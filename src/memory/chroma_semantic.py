@@ -3,6 +3,7 @@
 import re
 import uuid
 from typing import Optional, List
+from datetime import datetime
 import chromadb
 from chromadb.config import Settings, DEFAULT_TENANT, DEFAULT_DATABASE
 from ..config.settings import CHROMA_BASE_URL, CHROMA_HOST, CHROMA_PORT
@@ -92,7 +93,13 @@ class ChromaSemanticStore:
         emb = embed_fn(norm)
         mem_id = str(uuid.uuid4())
         
-        metadata = {"normalized_text": norm}
+        # Add timestamps to metadata
+        created_at = datetime.utcnow().strftime("%d-%m-%Y %H:%M")
+        
+        metadata = {
+            "normalized_text": norm,
+            "created_at": created_at  # NEW: Store created timestamp
+        }
         if message_id:
             metadata["message_id"] = message_id
         if run_id:
@@ -124,8 +131,13 @@ class ChromaSemanticStore:
             if not results or not results.get("ids"):
                 return False
             
-            # Get the old ID
+            # Get the old ID and metadata
             old_id = results["ids"][0]
+            old_metadata = results["metadatas"][0] if results.get("metadatas") else {}
+            
+            # Preserve created_at from old metadata
+            created_at = old_metadata.get("created_at", datetime.utcnow().strftime("%d-%m-%Y %H:%M"))
+            updated_at = datetime.utcnow().strftime("%d-%m-%Y %H:%M")
             
             # Delete the old entry
             col.delete(ids=[old_id])
@@ -139,7 +151,12 @@ class ChromaSemanticStore:
                 ids=[new_id],
                 documents=[text],
                 embeddings=[emb],
-                metadatas={"normalized_text": norm, "message_id": message_id},
+                metadatas={
+                    "normalized_text": norm,
+                    "message_id": message_id,
+                    "created_at": created_at,  # Preserve original created_at
+                    "updated_at": updated_at   # NEW: Add updated_at timestamp
+                },
             )
             
             return True
@@ -194,10 +211,12 @@ class ChromaSemanticStore:
         dists = (res.get("distances") or [[]])[0]
         metas = (res.get("metadatas") or [[]])[0]
         for i, _id in enumerate(ids):
-            out.append({
+            item = {
                 "id": _id,
                 "document": docs[i] if i < len(docs) else None,
                 "distance": dists[i] if i < len(dists) else None,
                 "metadata": metas[i] if i < len(metas) else {},
-            })
+            }
+          
+            out.append(item)
         return out

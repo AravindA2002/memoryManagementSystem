@@ -13,6 +13,12 @@ class LongTermType(str, Enum):
     SEMANTIC = "semantic"
     EPISODIC = "episodic"
     PROCEDURAL = "procedural"
+    WORKING_PERSISTED = "working_persisted"
+
+class EpisodicSubtype(str, Enum):
+    CONVERSATIONAL = "conversational"
+    SUMMARIES = "summaries"
+    OBSERVATIONS = "observations"
 
 # ==================== SHORT TERM MEMORY SCHEMAS ====================
 
@@ -37,6 +43,7 @@ class CacheMemory(ShortTermMemoryBase):
     ttl: int = Field(default=600, description="Time to live in seconds")
     message_id: Optional[str] = Field(default=None, description="Auto-generated")
     run_id: Optional[str] = Field(default="", description="Run ID")
+
 # -------------------- Working Memory Schema --------------------
 class WorkingMemory(ShortTermMemoryBase):
     """Working memory schema - base fields + workflow-specific fields"""
@@ -49,19 +56,30 @@ class WorkingMemory(ShortTermMemoryBase):
 
 # -------------------- Working-persisted Memory Schema --------------------
 class WorkingMemoryPersisted(BaseModel):
-    """Persisted working memory - stored in MongoDB with exact same schema as short-term working memory"""
-    agent_id: str
-    memory: Dict[str, Any]
-    memory_type: str = "working_persisted"
-    message_id: str  # From short-term memory
-    run_id: str = ""
-    workflow_id: str = ""
-    stages: List[str] = []
-    current_stage: str = ""
-    context_log_summary: str = ""
-    user_query: str = ""
-    created_at: str  # From short-term memory
-    updated_at: Optional[str] = None  # From short-term memory if it was updated
+    """
+    Persisted working memory - stored in MongoDB with exact same schema as short-term working memory.
+    This is stored in its OWN collection (lt_working_persisted), NOT under episodic.
+    """
+    agent_id: str = Field(..., description="Agent ID (required)")
+    memory: Dict[str, Any] = Field(..., description="Memory content - same as short-term")
+    memory_type: Literal["working_persisted"] = "working_persisted"
+    message_id: str = Field(..., description="Message ID from short-term memory")
+    run_id: Optional[str] = Field(default="", description="Run ID for tracking")
+    
+    # Working memory specific fields (same as WorkingMemory)
+    workflow_id: Optional[str] = Field(default=None, description="Workflow identifier")
+    stages: List[str] = Field(default_factory=list, description="List of workflow stages")
+    current_stage: Optional[str] = Field(default=None, description="Current stage in workflow")
+    context_log_summary: Optional[str] = Field(default=None, description="Summary of context/logs")
+    user_query: Optional[str] = Field(default=None, description="Original user query")
+    
+    # Metadata fields
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="When it was originally created in short-term")
+    updated_at: Optional[datetime] = Field(default=None, description="When it was last updated in short-term (only if updated)")
+    persisted_at: datetime = Field(default_factory=datetime.utcnow, description="When it was persisted to long-term")
+    original_ttl: Optional[int] = Field(default=None, description="Original TTL from short-term memory")
+    tags: List[str] = Field(default_factory=list, description="Tags for categorization")
+    version: int = Field(default=1, description="Version number for updates")
 
 # -------------------- Generic Schema (for backward compatibility) --------------------
 class ShortTermMemory(ShortTermMemoryBase):
@@ -147,93 +165,300 @@ class ShortTermMemoryUpdate(BaseModel):
     context_log_summary: Optional[str] = Field(default=None)
     user_query: Optional[str] = Field(default=None)
     ttl: Optional[int] = Field(default=None, description="Update TTL (resets expiration)")
-# ==================== LONG TERM MEMORY (Keep existing - will update later) ====================
-class LongTermMemory(BaseModel):
-    """Base class for all long-term memories (MongoDB-based, permanent)"""
-    agent_id: str
-    memory: Dict[str, Any] = Field(
-        default_factory=dict,
-        example={},
-        description="Key-value pairs representing the memory content"
-    )
-    memory_type: LongTermType = Field(..., description="Type of long-term memory")
-    message_id: Optional[str] = Field(default=None, description="Message ID for tracking")
+
+# ==================== LONG TERM MEMORY SCHEMAS (CLEANED) ====================
+
+# -------------------- Base Long Term Schema --------------------
+class LongTermMemoryBase(BaseModel):
+    """Base schema for all long-term memories"""
+    agent_id: str = Field(..., description="Agent ID (required)")
+    memory: Dict[str, Any] = Field(..., description="Memory content")
+    message_id: Optional[str] = Field(default="", description="Auto-generated message ID")
     run_id: Optional[str] = Field(default=None, description="Run ID for tracking")
-    tags: List[str] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict, example={})
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    created_by: Optional[str] = None
-    source_system: Optional[str] = None
-    version: int = 1
-    deleted: bool = False
+
+# ==================== EPISODIC MEMORY SCHEMAS ====================
+
+# -------------------- Conversational Schema --------------------
+class ConversationalMemory(LongTermMemoryBase):
+    """Conversational episodic memory - for chat/dialogue interactions"""
+    memory_type: Literal[LongTermType.EPISODIC] = LongTermType.EPISODIC
+    subtype: Literal["conversational"] = Field(default="conversational", description="Auto-set to conversational")
+    message_id: Optional[str] = Field(default="", description="Auto-generated")
+    conversation_id: str = Field(..., description="Conversation identifier")
+    role: str = Field(..., description="Role (user/assistant/system)")
+    current_stage: Optional[str] = Field(default="", description="Current conversation stage")
+    recall_recovery: Optional[str] = Field(default="", description="Recall recovery information")
+    embeddings: List[float] = Field(default_factory=list, description="Vector embeddings")
+
+# -------------------- Summaries Schema --------------------
+class SummariesMemory(LongTermMemoryBase):
+    """Summaries episodic memory - just base schema, nothing extra"""
+    memory_type: Literal[LongTermType.EPISODIC] = LongTermType.EPISODIC
+    subtype: Literal["summaries"] = Field(default="summaries", description="Auto-set to summaries")
+    message_id: Optional[str] = Field(default="", description="Auto-generated")
+
+# -------------------- Observations Schema --------------------
+class ObservationsMemory(LongTermMemoryBase):
+    """Observations episodic memory - for agent observations and learnings"""
+    memory_type: Literal[LongTermType.EPISODIC] = LongTermType.EPISODIC
+    subtype: Literal["observations"] = Field(default="observations", description="Auto-set to observations")
+    message_id: Optional[str] = Field(default="", description="Auto-generated")
+    observation_id: str = Field(..., description="Observation identifier")
+    observation_kpi: Optional[str] = Field(default="", description="Observation KPI metrics")
+    recall_recovery: Optional[str] = Field(default="", description="Recall recovery information")
+    embeddings: List[float] = Field(default_factory=list, description="Vector embeddings")
+# -------------------- Generic Episodic (for backward compatibility) --------------------
+class EpisodicMemory(BaseModel):
+    """Generic episodic memory input (accepts all subtypes)"""
+    agent_id: str = Field(..., description="Agent ID (required)")
+    memory: Dict[str, Any] = Field(..., description="Memory content")
+    memory_type: Literal[LongTermType.EPISODIC] = LongTermType.EPISODIC
+    message_id: Optional[str] = Field(default="", description="Auto-generated")
+    run_id: Optional[str] = Field(default="", description="Run ID")
+    subtype: Literal["conversational", "summaries", "observations"] = Field(..., description="Episodic subtype")
     
-    # Semantic specific (only used when memory_type=SEMANTIC)
-    normalized_text: Optional[str] = Field(default=None, description="Normalized text for embedding")
-    
-    # Subtype - different values for different memory types
-    # For episodic: conversational, summaries, observations, working_persisted
-    # For procedural: agent_store, tool_store, workflow_store
-    subtype: Optional[str] = Field(default=None, description="Subtype varies by memory_type")
-    
-    # Episodic specific (only used when memory_type=EPISODIC)
+    # Conversational fields
     conversation_id: Optional[str] = None
-    role: Optional[Literal["user","assistant","system"]] = None
-    turn_index: Optional[int] = None
-    channel: Optional[str] = None
-    span_start: Optional[datetime] = None
-    span_end: Optional[datetime] = None
-    summary_type: Optional[Literal["extractive","abstractive"]] = None
-    quality_score: Optional[float] = None
-    observation_id: Optional[str] = None
-    event: Optional[str] = None
-    result: Optional[str] = None
-    reward: Optional[float] = None
-    credibility: Optional[float] = None
-    source: Optional[str] = None
+    role: Optional[str] = None
+    current_stage: Optional[str] = None
+    recall_recovery: Optional[str] = None
+    embeddings: List[float] = Field(default_factory=list)
     
-    # Working memory persisted fields (only used when subtype=working_persisted)
+    # Observations fields
+    observation_id: Optional[str] = None
+    observation_kpi: Optional[str] = None
+
+# ==================== LONG TERM OUTPUT SCHEMAS ====================
+
+# -------------------- Metadata Output Schema --------------------
+class LongTermMetadataOut(BaseModel):
+    """Metadata for long-term memory responses"""
+    created_at: str = Field(..., description="When memory was created (format: DD-MM-YYYY HH:MM)")
+    updated_at: Optional[str] = Field(default=None, description="When memory was last updated (only if updated)")
+
+# -------------------- Semantic Output Schema --------------------
+class SemanticMemoryOut(BaseModel):
+    """Output schema for semantic memory retrieval"""
+    agent_id: str
+    memory: Dict[str, Any]
+    memory_type: Literal["semantic"] = "semantic"
+    message_id: str
+    run_id: Optional[str] = None
+    metadata: LongTermMetadataOut
+
+# -------------------- Episodic Output Schemas --------------------
+
+class ConversationalMemoryOut(BaseModel):
+    """Output schema for conversational episodic memory"""
+    agent_id: str
+    memory: Dict[str, Any]
+    memory_type: Literal["episodic"] = "episodic"
+    subtype: Literal["conversational"] = "conversational"
+    message_id: str
+    run_id: Optional[str] = None
+    conversation_id: str
+    role: str
+    current_stage: Optional[str] = None
+    recall_recovery: Optional[str] = None
+    embeddings: List[float] = Field(default_factory=list)
+    metadata: LongTermMetadataOut
+
+class SummariesMemoryOut(BaseModel):
+    """Output schema for summaries episodic memory"""
+    agent_id: str
+    memory: Dict[str, Any]
+    memory_type: Literal["episodic"] = "episodic"
+    subtype: Literal["summaries"] = "summaries"
+    message_id: str
+    run_id: Optional[str] = None
+    metadata: LongTermMetadataOut
+
+class ObservationsMemoryOut(BaseModel):
+    """Output schema for observations episodic memory"""
+    agent_id: str
+    memory: Dict[str, Any]
+    memory_type: Literal["episodic"] = "episodic"
+    subtype: Literal["observations"] = "observations"
+    message_id: str
+    run_id: Optional[str] = None
+    observation_id: str
+    observation_kpi: Optional[str] = None
+    recall_recovery: Optional[str] = None
+    embeddings: List[float] = Field(default_factory=list)
+    metadata: LongTermMetadataOut
+
+# ==================== SEMANTIC MEMORY SCHEMA ====================
+
+class SemanticMemory(LongTermMemoryBase):
+    """Semantic memory - just base schema, nothing extra"""
+    memory_type: Literal[LongTermType.SEMANTIC] = LongTermType.SEMANTIC
+    message_id: Optional[str] = Field(default="", description="Auto-generated")
+    normalized_text: Optional[str] = Field(default=None, description="Normalized text for embedding (internal use)")
+
+# ==================== PROCEDURAL MEMORY SCHEMA ====================
+
+class ProceduralMemory(LongTermMemoryBase):
+    """Procedural memory - for agent/tool/workflow configurations"""
+    memory_type: Literal[LongTermType.PROCEDURAL] = LongTermType.PROCEDURAL
+    message_id: Optional[str] = Field(default="", description="Auto-generated")
+    subtype: Literal["agent_store", "tool_store", "workflow_store"] = Field(..., description="Procedural subtype")
+    name: str = Field(..., description="Name of the procedure/config")
+    config: Dict[str, Any] = Field(default_factory=dict, description="Configuration data")
+    integration: Dict[str, Any] = Field(default_factory=dict, description="Integration details")
+    status: Literal["active", "deprecated"] = Field(default="active", description="Status")
+    change_note: Optional[str] = Field(default=None, description="Change notes")
+    steps: List[Dict[str, Any]] = Field(default_factory=list, description="Procedure steps")
+
+# ==================== LONG TERM UPDATE SCHEMAS ====================
+
+# -------------------- Episodic Update (Conversational) --------------------
+class ConversationalMemoryUpdate(BaseModel):
+    """Update schema for conversational episodic memory"""
+    agent_id: str = Field(..., description="Agent ID (required)")
+    message_id: str = Field(..., description="Message ID (required)")
+    
+    # Fields to update
+    memory_updates: Dict[str, Any] = Field(default_factory=dict, description="Memory updates")
+    remove_keys: List[str] = Field(default_factory=list, description="Keys to remove")
+    
+    # Conversational specific updates
+    conversation_id: Optional[str] = None
+    role: Optional[str] = None
+    current_stage: Optional[str] = None
+    recall_recovery: Optional[str] = None
+    embeddings: Optional[List[float]] = None
+
+# -------------------- Episodic Update (Summaries) --------------------
+class SummariesMemoryUpdate(BaseModel):
+    """Update schema for summaries episodic memory"""
+    agent_id: str = Field(..., description="Agent ID (required)")
+    message_id: str = Field(..., description="Message ID (required)")
+    
+    # Fields to update
+    memory_updates: Dict[str, Any] = Field(default_factory=dict, description="Memory updates")
+    remove_keys: List[str] = Field(default_factory=list, description="Keys to remove")
+
+# -------------------- Episodic Update (Observations) --------------------
+class ObservationsMemoryUpdate(BaseModel):
+    """Update schema for observations episodic memory"""
+    agent_id: str = Field(..., description="Agent ID (required)")
+    message_id: str = Field(..., description="Message ID (required)")
+    
+    # Fields to update
+    memory_updates: Dict[str, Any] = Field(default_factory=dict, description="Memory updates")
+    remove_keys: List[str] = Field(default_factory=list, description="Keys to remove")
+    
+    # Observations specific updates
+    observation_id: Optional[str] = None
+    observation_kpi: Optional[str] = None
+    recall_recovery: Optional[str] = None
+    embeddings: Optional[List[float]] = None
+
+# -------------------- Semantic Update --------------------
+class SemanticMemoryUpdate(BaseModel):
+    """Update schema for semantic memory"""
+    agent_id: str = Field(..., description="Agent ID (required)")
+    message_id: str = Field(..., description="Message ID (required)")
+    
+    # Fields to update
+    memory_updates: Dict[str, Any] = Field(default_factory=dict, description="Memory updates")
+    remove_keys: List[str] = Field(default_factory=list, description="Keys to remove")
+    normalized_text: Optional[str] = None
+
+# -------------------- Procedural Update --------------------
+class ProceduralMemoryUpdate(BaseModel):
+    """Update schema for procedural memory"""
+    agent_id: str = Field(..., description="Agent ID (required)")
+    message_id: str = Field(..., description="Message ID (required)")
+    
+    # Fields to update
+    memory_updates: Dict[str, Any] = Field(default_factory=dict, description="Memory updates")
+    remove_keys: List[str] = Field(default_factory=list, description="Keys to remove")
+    
+    # Procedural specific updates
+    subtype: Optional[Literal["agent_store", "tool_store", "workflow_store"]] = None
+    name: Optional[str] = None
+    config_updates: Optional[Dict[str, Any]] = None
+    integration_updates: Optional[Dict[str, Any]] = None
+    status: Optional[Literal["active", "deprecated"]] = None
+    change_note: Optional[str] = None
+    steps: Optional[List[Dict[str, Any]]] = None
+
+# -------------------- Working Persisted Update --------------------
+class WorkingMemoryPersistedUpdate(BaseModel):
+    """Update schema for working_persisted memory"""
+    agent_id: str = Field(..., description="Agent ID (required)")
+    message_id: str = Field(..., description="Message ID (required)")
+    
+    # Fields to update
+    memory_updates: Dict[str, Any] = Field(default_factory=dict)
+    remove_keys: List[str] = Field(default_factory=list)
+    
+    # Optional: Update working memory specific fields
     workflow_id: Optional[str] = None
-    stages: List[str] = Field(default_factory=list)
+    stages: Optional[List[str]] = None
     current_stage: Optional[str] = None
     context_log_summary: Optional[str] = None
     user_query: Optional[str] = None
-    persisted_at: Optional[datetime] = None
-    original_ttl: Optional[int] = None
+    tags: Optional[List[str]] = None
+
+# ==================== LEGACY SUPPORT (for backward compatibility) ====================
+
+class LongTermMemory(BaseModel):
+    """Legacy generic long-term memory model (for backward compatibility)"""
+    agent_id: str
+    memory: Dict[str, Any] = Field(default_factory=dict)
+    memory_type: LongTermType = Field(..., description="Type of long-term memory")
+    message_id: Optional[str] = Field(default="", description="Auto-generated")
+    run_id: Optional[str] = Field(default="", description="Run ID")
     
-    # Procedural specific (only used when memory_type=PROCEDURAL)
+    # Metadata (auto-generated, not editable by user)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: Optional[datetime] = None
+    
+    # Semantic specific
+    normalized_text: Optional[str] = None
+    
+    # Episodic specific
+    subtype: Optional[str] = None
+    conversation_id: Optional[str] = None
+    role: Optional[str] = None
+    current_stage: Optional[str] = None
+    recall_recovery: Optional[str] = None
+    embeddings: List[float] = Field(default_factory=list)
+    observation_id: Optional[str] = None
+    observation_kpi: Optional[str] = None
+    
+    # Procedural specific
     name: Optional[str] = None
     config: Dict[str, Any] = Field(default_factory=dict)
     integration: Dict[str, Any] = Field(default_factory=dict)
-    status: Optional[Literal["active","deprecated"]] = None
+    status: Optional[Literal["active", "deprecated"]] = None
     change_note: Optional[str] = None
     steps: List[Dict[str, Any]] = Field(default_factory=list)
 
-# -------------------- Update Models for Long Term --------------------
 class LongTermMemoryUpdate(BaseModel):
-    """Model for updating long-term memory"""
-    agent_id: str = Field(..., description="Agent ID (required for identification)")
-    message_id: str = Field(..., description="Message ID (required for identification)")
+    """Legacy generic update model"""
+    agent_id: str = Field(..., description="Agent ID (required)")
+    message_id: str = Field(..., description="Message ID (required)")
     memory_type: LongTermType = Field(..., description="Type of long-term memory")
     
-    # Fields to update
-    memory_updates: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Key-value pairs to update or add in memory. Existing keys will be updated, new keys will be added."
-    )
-    remove_keys: List[str] = Field(
-        default_factory=list,
-        description="List of keys to remove from memory"
-    )
+    memory_updates: Dict[str, Any] = Field(default_factory=dict)
+    remove_keys: List[str] = Field(default_factory=list)
     
-    # Optional: Update metadata and other fields
-    tags: Optional[List[str]] = None
-    metadata_updates: Optional[Dict[str, Any]] = None
-    
-    # Optional: Update specific fields based on memory type
-    normalized_text: Optional[str] = None  # For semantic
-    subtype: Optional[str] = None  # For episodic/procedural
+    # Optional fields for different types
+    normalized_text: Optional[str] = None
+    subtype: Optional[str] = None
     conversation_id: Optional[str] = None
-    workflow_id: Optional[str] = None
+    role: Optional[str] = None
+    current_stage: Optional[str] = None
+    recall_recovery: Optional[str] = None
+    embeddings: Optional[List[float]] = None
+    observation_id: Optional[str] = None
+    observation_kpi: Optional[str] = None
     name: Optional[str] = None
-    status: Optional[Literal["active","deprecated"]] = None
-    config_updates: Optional[Dict[str, Any]] = None  # For procedural
+    config_updates: Optional[Dict[str, Any]] = None
+    integration_updates: Optional[Dict[str, Any]] = None
+    status: Optional[Literal["active", "deprecated"]] = None
+    change_note: Optional[str] = None
+    steps: Optional[List[Dict[str, Any]]] = None

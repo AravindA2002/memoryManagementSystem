@@ -3,16 +3,23 @@ from uuid import uuid4
 from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
-from .types import LongTermMemory, LongTermType, LongTermMemoryUpdate
+from .types import (
+    LongTermMemory, 
+    LongTermType, 
+    LongTermMemoryUpdate,
+    WorkingMemoryPersisted,
+    WorkingMemoryPersistedUpdate
+)
 
 COLS = {
     "semantic": "lt_semantic",
     "episodic": "lt_episodic",
     "procedural": "lt_procedural",
+    "working_persisted": "lt_working_persisted",  # NEW: Separate collection
 }
 
 class LongTermStore:
-    """MongoDB-based Long Term Memory Store (Semantic, Episodic, Procedural)"""
+    """MongoDB-based Long Term Memory Store (Semantic, Episodic, Procedural, Working Persisted)"""
     
     def __init__(self, mongo_url: str, db_name: str = "memory"):
         self.client = AsyncIOMotorClient(mongo_url)
@@ -33,12 +40,15 @@ class LongTermStore:
         # Episodic specific indexes
         await self.db[COLS["episodic"]].create_index([("agent_id", 1), ("subtype", 1)])
         await self.db[COLS["episodic"]].create_index([("agent_id", 1), ("conversation_id", 1)])
-        await self.db[COLS["episodic"]].create_index([("agent_id", 1), ("workflow_id", 1)])
-        await self.db[COLS["episodic"]].create_index([("workflow_id", 1)])
         
         # Procedural specific indexes
         await self.db[COLS["procedural"]].create_index([("agent_id", 1), ("name", 1), ("version", -1)])
         await self.db[COLS["procedural"]].create_index([("agent_id", 1), ("subtype", 1)])
+        
+        # Working Persisted specific indexes
+        await self.db[COLS["working_persisted"]].create_index([("agent_id", 1), ("workflow_id", 1)])
+        await self.db[COLS["working_persisted"]].create_index([("workflow_id", 1)])
+        await self.db[COLS["working_persisted"]].create_index([("agent_id", 1), ("persisted_at", -1)])
 
         self._ready = True
 
@@ -50,6 +60,20 @@ class LongTermStore:
         
         # Store in appropriate collection based on memory_type
         collection = COLS[m.memory_type.value]
+        await self.db[collection].insert_one(doc)
+        return doc["id"]
+    
+    async def create_working_persisted(self, m: WorkingMemoryPersisted) -> str:
+        """
+        Create a working_persisted memory entry.
+        This stores the working memory with the SAME schema as short-term working memory.
+        """
+        await self.ensure_indexes()
+        doc = m.model_dump()
+        doc["id"] = str(uuid4())
+        
+        # Store in dedicated working_persisted collection
+        collection = COLS["working_persisted"]
         await self.db[collection].insert_one(doc)
         return doc["id"]
 
@@ -127,6 +151,68 @@ class LongTermStore:
         updated = await self.db[collection].find_one(query, {"_id": 0})
         return updated
 
+    async def update_working_persisted(self, update: WorkingMemoryPersistedUpdate) -> Optional[dict]:
+        """Update a working_persisted memory by agent_id and message_id"""
+        await self.ensure_indexes()
+        
+        collection = COLS["working_persisted"]
+        
+        # Find the document
+        query = {
+            "agent_id": update.agent_id,
+            "message_id": update.message_id
+        }
+        
+        existing = await self.db[collection].find_one(query, {"_id": 0})
+        
+        if not existing:
+            return None
+        
+        # Prepare update operations
+        update_ops = {}
+        
+        # Update memory dictionary
+        if update.memory_updates:
+            for key, value in update.memory_updates.items():
+                update_ops[f"memory.{key}"] = value
+        
+        # Remove keys from memory
+        unset_ops = {}
+        for key in update.remove_keys:
+            unset_ops[f"memory.{key}"] = ""
+        
+        # Update working memory specific fields
+        if update.workflow_id is not None:
+            update_ops["workflow_id"] = update.workflow_id
+        if update.stages is not None:
+            update_ops["stages"] = update.stages
+        if update.current_stage is not None:
+            update_ops["current_stage"] = update.current_stage
+        if update.context_log_summary is not None:
+            update_ops["context_log_summary"] = update.context_log_summary
+        if update.user_query is not None:
+            update_ops["user_query"] = update.user_query
+        if update.tags is not None:
+            update_ops["tags"] = update.tags
+        
+        # Increment version
+        update_ops["version"] = existing.get("version", 1) + 1
+        update_ops["updated_at"] = datetime.utcnow()
+        
+        # Perform update
+        mongo_update = {}
+        if update_ops:
+            mongo_update["$set"] = update_ops
+        if unset_ops:
+            mongo_update["$unset"] = unset_ops
+        
+        if mongo_update:
+            await self.db[collection].update_one(query, mongo_update)
+        
+        # Return updated document
+        updated = await self.db[collection].find_one(query, {"_id": 0})
+        return updated
+
     async def get_many(
         self,
         memory_type: LongTermType,
@@ -162,6 +248,32 @@ class LongTermStore:
             .sort("created_at", -1)
         )
         return await cur.to_list(length=None)
+    
+    async def get_working_persisted(
+        self,
+        agent_id: str,
+        workflow_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+        run_id: Optional[str] = None
+    ) -> List[dict]:
+        """Retrieve working_persisted memories with filters"""
+        await self.ensure_indexes()
+        
+        query = {"agent_id": agent_id}
+        if workflow_id:
+            query["workflow_id"] = workflow_id
+        if message_id:
+            query["message_id"] = message_id
+        if run_id:
+            query["run_id"] = run_id
+            
+        collection = COLS["working_persisted"]
+        cur = (
+            self.db[collection]
+            .find(query, {"_id": 0})
+            .sort("persisted_at", -1)
+        )
+        return await cur.to_list(length=None)
 
     async def delete_by_message_id(
         self,
@@ -173,6 +285,23 @@ class LongTermStore:
         await self.ensure_indexes()
         
         collection = COLS[memory_type.value]
+        query = {
+            "agent_id": agent_id,
+            "message_id": message_id
+        }
+        
+        result = await self.db[collection].delete_one(query)
+        return result.deleted_count > 0
+    
+    async def delete_working_persisted_by_message_id(
+        self,
+        agent_id: str,
+        message_id: str
+    ) -> bool:
+        """Delete a specific working_persisted memory by message_id"""
+        await self.ensure_indexes()
+        
+        collection = COLS["working_persisted"]
         query = {
             "agent_id": agent_id,
             "message_id": message_id
@@ -195,4 +324,15 @@ class LongTermStore:
         result = await self.db[collection].delete_many(query)
         return result.deleted_count
     
-    
+    async def delete_all_working_persisted(
+        self,
+        agent_id: str
+    ) -> int:
+        """Delete all working_persisted memories for an agent"""
+        await self.ensure_indexes()
+        
+        collection = COLS["working_persisted"]
+        query = {"agent_id": agent_id}
+        
+        result = await self.db[collection].delete_many(query)
+        return result.deleted_count
