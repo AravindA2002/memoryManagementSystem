@@ -1,45 +1,12 @@
-
-
 import re
 import uuid
-from typing import Optional, List
+from typing import Optional
 from datetime import datetime
 import chromadb
 from chromadb.config import Settings, DEFAULT_TENANT, DEFAULT_DATABASE
 from ..config.settings import CHROMA_BASE_URL, CHROMA_HOST, CHROMA_PORT
 
-_VALID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,61}[A-Za-z0-9]$")  # 3-63, safe chars
-
-def _sanitize_collection_name(raw: str) -> str:
-    s = str(raw).strip()
-    # replace illegal chars
-    s = re.sub(r"[^A-Za-z0-9_-]", "-", s)
-    # ensure length >= 3
-    if len(s) < 3:
-        s = f"agent-{s}".ljust(3, "0")
-    # ensure starts/ends alnum
-    if not s[0].isalnum():
-        s = f"a{s}"
-    if not s[-1].isalnum():
-        s = f"{s}0"
-    # truncate to 63 while keeping alnum end
-    s = s[:63]
-    if not s[-1].isalnum():
-        s = s[:-1] + "0"
-    # final guard
-    if not _VALID.fullmatch(s):
-        # fallback to deterministic safe name
-        s = ("agent-" + re.sub(r"[^A-Za-z0-9]", "", s))[:63]
-        if len(s) < 3:
-            s = "agent-000"
-
-    return s
-
-def _norm_text(primary: str, fallback: str) -> str:
-    t = (primary or "").strip()
-    if not t or t.lower() == "string":  # protect against Swagger defaults
-        t = (fallback or "").strip()
-    return t
+_VALID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,61}[A-Za-z0-9]$")
 
 class ChromaSemanticStore:
     def __init__(self, host: str | None = None, port: int | None = None):
@@ -65,19 +32,47 @@ class ChromaSemanticStore:
             )
         return self._client
 
+    def _sanitize_collection_name(self, raw: str) -> str:
+        """Sanitize collection name for Chroma (3-63 chars, alphanumeric)"""
+        s = str(raw).strip()
+        s = re.sub(r"[^A-Za-z0-9_-]", "-", s)
+        
+        if len(s) < 3:
+            s = f"agent-{s}".ljust(3, "0")
+        
+        if not s[0].isalnum():
+            s = f"a{s}"
+        if not s[-1].isalnum():
+            s = f"{s}0"
+        
+        s = s[:63]
+        if not s[-1].isalnum():
+            s = s[:-1] + "0"
+        
+        if not _VALID.fullmatch(s):
+            s = ("agent-" + re.sub(r"[^A-Za-z0-9]", "", s))[:63]
+            if len(s) < 3:
+                s = "agent-000"
+        
+        return s
+
+    def _normalize_text(self, primary: str, fallback: str) -> str:
+        """Get normalized text, fallback if empty or 'string'"""
+        t = (primary or "").strip()
+        if not t or t.lower() == "string":
+            t = (fallback or "").strip()
+        return t
+
     def get_or_create_collection(self, name: str):
-        safe = _sanitize_collection_name(name)
+        safe = self._sanitize_collection_name(name)
         return self._client_or_connect().get_or_create_collection(name=safe)
 
     def delete_collection(self, name: str):
         try:
-            safe = _sanitize_collection_name(name)
+            safe = self._sanitize_collection_name(name)
             self._client_or_connect().delete_collection(safe)
         except Exception:
             pass
-
-    def list_collections(self):
-        return self._client_or_connect().list_collections()
 
     async def add(
         self, 
@@ -89,16 +84,15 @@ class ChromaSemanticStore:
         run_id: Optional[str] = None
     ) -> str:
         col = self.get_or_create_collection(agent_id)
-        norm = _norm_text(normalized_text, text)  # <- use memory if normalized is empty/"string"
+        norm = self._normalize_text(normalized_text, text)
         emb = embed_fn(norm)
         mem_id = str(uuid.uuid4())
         
-        # Add timestamps to metadata
         created_at = datetime.utcnow().strftime("%d-%m-%Y %H:%M")
         
         metadata = {
             "normalized_text": norm,
-            "created_at": created_at  # NEW: Store created timestamp
+            "created_at": created_at
         }
         if message_id:
             metadata["message_id"] = message_id
@@ -124,26 +118,22 @@ class ChromaSemanticStore:
         
         col = self.get_or_create_collection(agent_id)
         
-        # Find the entry by message_id
         try:
             results = col.get(where={"message_id": message_id})
             
             if not results or not results.get("ids"):
                 return False
             
-            # Get the old ID and metadata
             old_id = results["ids"][0]
             old_metadata = results["metadatas"][0] if results.get("metadatas") else {}
             
-            # Preserve created_at from old metadata
+            # Preserve created_at
             created_at = old_metadata.get("created_at", datetime.utcnow().strftime("%d-%m-%Y %H:%M"))
             updated_at = datetime.utcnow().strftime("%d-%m-%Y %H:%M")
             
-            # Delete the old entry
             col.delete(ids=[old_id])
             
-            # Add new entry with updated content
-            norm = _norm_text(normalized_text, text)
+            norm = self._normalize_text(normalized_text, text)
             emb = embed_fn(norm)
             new_id = str(uuid.uuid4())
             
@@ -154,19 +144,18 @@ class ChromaSemanticStore:
                 metadatas={
                     "normalized_text": norm,
                     "message_id": message_id,
-                    "created_at": created_at,  # Preserve original created_at
-                    "updated_at": updated_at   # NEW: Add updated_at timestamp
+                    "created_at": created_at,
+                    "updated_at": updated_at
                 },
             )
             
             return True
             
         except Exception as e:
-            print(f"Error updating semantic memory in ChromaDB: {e}")
+            print(f"Error updating semantic memory: {e}")
             return False
 
     async def delete_by_message_id(self, agent_id: str, message_id: str) -> bool:
-        
         try:
             col = self.get_or_create_collection(agent_id)
             results = col.get(where={"message_id": message_id})
@@ -178,27 +167,23 @@ class ChromaSemanticStore:
             return True
             
         except Exception as e:
-            print(f"Error deleting semantic memory from ChromaDB: {e}")
+            print(f"Error deleting semantic memory: {e}")
             return False
 
     async def delete_all(self, agent_id: str) -> int:
-       
         try:
             col = self.get_or_create_collection(agent_id)
-            
-            # Get all entries
             results = col.get()
             count = len(results.get("ids", []))
             
             if count > 0:
-                # Delete collection and recreate empty
                 self.delete_collection(agent_id)
                 self.get_or_create_collection(agent_id)
             
             return count
             
         except Exception as e:
-            print(f"Error deleting all semantic memories from ChromaDB: {e}")
+            print(f"Error deleting all semantic memories: {e}")
             return 0
 
     async def similarity_search(self, agent_id: str, query: str, embed_fn, k: int = 10):
@@ -217,6 +202,5 @@ class ChromaSemanticStore:
                 "distance": dists[i] if i < len(dists) else None,
                 "metadata": metas[i] if i < len(metas) else {},
             }
-          
             out.append(item)
         return out

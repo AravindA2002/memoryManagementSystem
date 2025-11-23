@@ -705,6 +705,60 @@ WORKING_PERSISTED_POST_SCHEMA = {
         }
     }
 }
+# Add after SEMANTIC_POST_SCHEMA
+
+SUPERMEMORY_POST_SCHEMA = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "title": "SupermemorySemanticMemory",
+                    "type": "object",
+                    "required": ["agent_id", "content"],
+                    "properties": {
+                        "agent_id": {
+                            "type": "string",
+                            "title": "Agent Id",
+                            "default": ""
+                        },
+                        "content": {
+                            "type": "string",
+                            "title": "Content",
+                            "default": "",
+                            "description": "Text content to store in Supermemory"
+                        },
+                        "memory": {
+                            "type": "object",
+                            "title": "Memory",
+                            "default": {},
+                            "description": "Additional structured data"
+                        },
+                        "run_id": {
+                            "type": "string",
+                            "title": "Run Id",
+                            "default": ""
+                        },
+                        "spaces": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "title": "Spaces",
+                            "default": [],
+                            "description": "Space IDs to add memory to"
+                        },
+                        "metadata_extra": {
+                            "type": "object",
+                            "title": "Metadata Extra",
+                            "default": {},
+                            "description": "Additional metadata"
+                        }
+                    },
+                    "description": "Note: message_id is auto-generated"
+                }
+            }
+        }
+    }
+}
 
 WORKING_PERSISTED_PATCH_SCHEMA = {
     "requestBody": {
