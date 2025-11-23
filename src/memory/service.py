@@ -523,13 +523,13 @@ class MemoryService:
                 memory_type=LongTermType.PROCEDURAL,
                 memory_updates=update.memory_updates,
                 remove_keys=update.remove_keys,
-                subtype=update.subtype,
-                name=update.name,
-                config_updates=update.config_updates,
-                integration_updates=update.integration_updates,
-                status=update.status,
-                change_note=update.change_note,
-                steps=update.steps
+                subtype=update.subtype if update.subtype else None,
+                name=update.name if update.name else None,
+                config_updates=update.config_updates if update.config_updates else None,
+                integration_updates=update.integration_updates if update.integration_updates else None,
+                status=update.status if update.status else None,
+                change_note=update.change_note if update.change_note else None,
+                steps=update.steps if update.steps and len(update.steps) > 0 else None
             )
         
         result = await self.long_term.update(storage_update)

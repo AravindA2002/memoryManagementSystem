@@ -3,6 +3,7 @@ from typing import Literal, Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 from enum import Enum
+from pydantic import BaseModel, Field, field_validator
 
 # Enums
 class ShortTermType(str, Enum):
@@ -295,6 +296,13 @@ class ProceduralMemoryUpdate(BaseModel):
     status: Optional[Literal["active", "deprecated"]] = None
     change_note: Optional[str] = None
     steps: Optional[List[Dict[str, Any]]] = None
+
+    @field_validator('status', mode='before')
+    @classmethod
+    def validate_status(cls, v):
+        if v == "":
+            return None
+        return v
 
 class WorkingMemoryPersistedUpdate(BaseModel):
     """Working persisted memory update schema"""

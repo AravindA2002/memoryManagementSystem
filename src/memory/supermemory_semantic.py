@@ -4,6 +4,7 @@ import json
 import re
 from supermemory import Supermemory
 from ..config.settings import SUPERMEMORY_API_KEY
+from .embeddings import openai_embed 
 
 
 class SupermemorySemanticStore:
@@ -45,7 +46,7 @@ class SupermemorySemanticStore:
         return flattened
     
     # COMMENTED OUT - LLM-based keyword extraction (can be re-enabled if needed)
-    '''
+    
     async def _extract_search_terms_with_llm(self, query: str) -> str:
         """
         Use LLM to dynamically extract KEY ENTITIES/KEYWORDS from queries
@@ -102,6 +103,7 @@ class SupermemorySemanticStore:
     
     #COMMENTED OUT - Simple keyword extraction fallback
     def _extract_key_terms_simple(self, query: str) -> str:
+
         """
         Simple keyword extraction without LLM
         Removes common stop words and extracts key terms
@@ -135,7 +137,53 @@ class SupermemorySemanticStore:
         
         result = ' '.join(keywords)
         print(f"Simple keyword extraction: '{query}' -> '{result}'")
-        return result'''
+        return result
+    
+    async def _rerank_with_original_query(
+    self,
+    results: List[Dict[str, Any]],
+    original_query: str
+) -> List[Dict[str, Any]]:
+        
+        """Re-rank results using vector similarity with original query"""
+        try:
+            query_embedding = openai_embed(original_query)
+            
+            reranked_results = []
+            for result in results:
+                content = result.get("content", "")
+                if not content:
+                    continue
+                
+                content_embedding = openai_embed(content)
+                
+                similarity = self._cosine_similarity(query_embedding, content_embedding)
+                
+                result["similarity"] = similarity
+                result["reranked"] = True
+                reranked_results.append(result)
+            
+            reranked_results.sort(key=lambda x: x["similarity"], reverse=True)
+            
+            print(f"Re-ranked {len(reranked_results)} results using original query")
+            return reranked_results
+            
+        except Exception as e:
+            print(f"Error re-ranking results: {e}")
+            return results
+
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """Calculate cosine similarity between two vectors"""
+        import math
+        
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        magnitude1 = math.sqrt(sum(a * a for a in vec1))
+        magnitude2 = math.sqrt(sum(b * b for b in vec2))
+        
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+        
+        return dot_product / (magnitude1 * magnitude2)
     
     async def add(
         self,
@@ -199,51 +247,31 @@ class SupermemorySemanticStore:
             raise
     
     async def search(
-        self,
-        agent_id: str,
-        query: str,
-        limit: int = 10,
-        spaces: Optional[List[str]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Search memories in Supermemory filtered by container_tag (agent_id)
-        
-        Uses Supermemory's built-in rewrite_query for handling conversational queries
-        
-        Args:
-            agent_id: Agent identifier for filtering
-            query: Search query (can be conversational)
-            limit: Maximum number of results
-            spaces: Optional space filters
-        
-        Returns:
-            List of memories with similarity scores, context, and metadata
-        """
+    self,
+    agent_id: str,
+    query: str,
+    limit: int = 10,
+    spaces: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+        """Search with LLM preprocessing and re-ranking"""
         try:
-            print(f"Searching Supermemory with rewrite_query - Query: '{query}', Agent ID: {agent_id}, Limit: {limit}")
+            processed_query = await self._extract_search_terms_with_llm(query)
+            print(f"Original: '{query}' -> Processed: '{processed_query}'")
             
-            # Use Supermemory's built-in rewrite_query for conversational queries
             response = self.client.search.memories(
-                q=query,
+                q=processed_query,
                 container_tag=agent_id,
-                limit=limit,
-                
-                rerank=True,  # Enable reranking for better results
-                rewrite_query=True  # Let Supermemory rewrite conversational queries
+                limit=limit * 2,  # Fetch more for re-ranking
+                rerank=True,
+                rewrite_query=False
             )
             
-            print(f"Search response type: {type(response)}")
-            
-            # Access the results attribute directly
             if hasattr(response, 'results'):
                 results_list = response.results
-                print(f"Found {len(results_list)} results")
             else:
                 results_dict = response.__dict__ if hasattr(response, '__dict__') else {}
                 results_list = results_dict.get('results', [])
-                print(f"Found {len(results_list)} results via dict access")
             
-            # Convert results to proper dict format
             formatted_results = []
             for result in results_list:
                 if hasattr(result, '__dict__'):
@@ -253,7 +281,6 @@ class SupermemorySemanticStore:
                 else:
                     continue
                 
-                # Format the result with all available fields
                 formatted_result = {
                     "id": result_dict.get("id"),
                     "content": result_dict.get("memory") or result_dict.get("content"),
@@ -263,13 +290,18 @@ class SupermemorySemanticStore:
                     "context": result_dict.get("context"),
                     "version": result_dict.get("version"),
                     "root_memory_id": result_dict.get("rootMemoryId") or result_dict.get("root_memory_id"),
-                    "original_query": query
+                    "original_query": query,
+                    "processed_query": processed_query
                 }
                 
                 formatted_results.append(formatted_result)
             
-            print(f"Returning {len(formatted_results)} formatted results")
-            return formatted_results
+            reranked_results = await self._rerank_with_original_query(formatted_results, query)
+            
+            final_results = reranked_results[:limit]
+            
+            print(f"Returned {len(final_results)} re-ranked results")
+            return final_results
             
         except Exception as e:
             print(f"Error searching Supermemory: {e}")

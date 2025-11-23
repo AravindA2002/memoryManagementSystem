@@ -106,18 +106,24 @@ class LongTermStore:
         
         if update.normalized_text is not None:
             update_ops["normalized_text"] = update.normalized_text
-        if update.subtype is not None:
+        if update.subtype and update.subtype != "":
             update_ops["subtype"] = update.subtype
-        if update.conversation_id is not None:
+        if update.conversation_id and update.conversation_id != "":
             update_ops["conversation_id"] = update.conversation_id
-        if update.name is not None:
+        if update.name and update.name != "":
             update_ops["name"] = update.name
-        if update.status is not None:
+        if update.status and update.status != "":
             update_ops["status"] = update.status
-        
+        if update.change_note and update.change_note != "":
+            update_ops["change_note"] = update.change_note
         if update.config_updates:
             for key, value in update.config_updates.items():
                 update_ops[f"config.{key}"] = value
+        if update.integration_updates:
+            for key, value in update.integration_updates.items():
+                update_ops[f"integration.{key}"] = value
+        if update.steps and len(update.steps) > 0:
+            update_ops["steps"] = update.steps
         
         update_ops["version"] = existing.get("version", 1) + 1
         update_ops["updated_at"] = datetime.utcnow()
