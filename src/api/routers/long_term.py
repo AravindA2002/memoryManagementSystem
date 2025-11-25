@@ -118,7 +118,7 @@ async def delete_supermemory_semantic(
     
     return await svc.delete_supermemory(agent_id, message_id, memory_id)
 
-# Add this temporary diagnostic endpoint
+
 
 
 

@@ -14,11 +14,11 @@ class SupermemorySemanticStore:
         self.api_key = SUPERMEMORY_API_KEY
         
         if not self.api_key:
-            raise ValueError("SUPERMEMORY_API_KEY not found in settings. Please set it in .env file")
+            raise ValueError("API key not found")
         
         # Initialize Supermemory client
         self.client = Supermemory(api_key=self.api_key)
-        print("Supermemory SDK initialized successfully")
+        print("Supermemory SDK initialized")
     
     def _flatten_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -45,7 +45,7 @@ class SupermemorySemanticStore:
         
         return flattened
     
-    # COMMENTED OUT - LLM-based keyword extraction (can be re-enabled if needed)
+    
     
     async def _extract_search_terms_with_llm(self, query: str) -> str:
         """
@@ -56,9 +56,6 @@ class SupermemorySemanticStore:
             from openai import AsyncOpenAI
             from ..config.settings import OPENAI_API_KEY
             
-            if not OPENAI_API_KEY:
-                print("OpenAI API key not found, falling back to simple extraction")
-                return self._extract_key_terms_simple(query)
             
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
             
@@ -99,45 +96,10 @@ class SupermemorySemanticStore:
             
         except Exception as e:
             print(f"Error using LLM for keyword extraction: {e}")
-            return self._extract_key_terms_simple(query)
+            
     
-    #COMMENTED OUT - Simple keyword extraction fallback
-    def _extract_key_terms_simple(self, query: str) -> str:
-
-        """
-        Simple keyword extraction without LLM
-        Removes common stop words and extracts key terms
-        """
-        import re
-        
-        query_lower = query.lower().strip()
-        
-        # Common stop words to remove
-        stop_words = {
-            'tell', 'me', 'about', 'what', 'is', 'are', 'the', 'a', 'an',
-            'who', 'where', 'when', 'why', 'how', 'does', 'do', 'did',
-            'can', 'could', 'would', 'should', 'will', 'shall',
-            'give', 'show', 'find', 'search', 'get', 'fetch',
-            'information', 'details', 'info', 'all', 'any',
-            'please', 'you', 'your', 'i', 'my', 'we', 'our'
-        }
-        
-        # Remove question marks and punctuation
-        query_clean = re.sub(r'[?!.,;:]', '', query_lower)
-        
-        # Split into words
-        words = query_clean.split()
-        
-        # Filter out stop words and very short words
-        keywords = [w for w in words if w not in stop_words and len(w) > 1]
-        
-        # If we removed everything, return original
-        if not keywords:
-            return query.strip()
-        
-        result = ' '.join(keywords)
-        print(f"Simple keyword extraction: '{query}' -> '{result}'")
-        return result
+  
+    
     
     async def _rerank_with_original_query(
     self,
@@ -325,34 +287,7 @@ class SupermemorySemanticStore:
             print(f"Error getting memory: {e}")
             return None
     
-    async def update(
-        self,
-        memory_id: str,
-        content: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """Update an existing memory"""
-        try:
-            update_params = {"id": memory_id}
-            
-            if content is not None:
-                update_params["content"] = content
-            
-            if metadata is not None:
-                update_params["metadata"] = self._flatten_metadata(metadata)
-            
-            response = self.client.memories.update(**update_params)
-            
-            if hasattr(response, '__dict__'):
-                return response.__dict__
-            elif isinstance(response, dict):
-                return response
-            else:
-                return {"status": "updated", "id": memory_id}
-                
-        except Exception as e:
-            print(f"Error updating memory: {e}")
-            raise
+
     
     async def delete(self, memory_id: str) -> bool:
         """Delete a memory by ID"""
@@ -382,52 +317,4 @@ class SupermemorySemanticStore:
             print(f"Error deleting by message_id: {e}")
             return False
     
-    async def list_all(self, agent_id: str, limit: int = 100) -> List[Dict[str, Any]]:
-        """List all memories for an agent using container_tag"""
-        try:
-            try:
-                results = self.client.memories.list(limit=limit, container_tag=agent_id)
-            except TypeError:
-                results = self.client.memories.list(limit=limit)
-            
-            if hasattr(results, '__dict__'):
-                results_data = results.__dict__
-            elif isinstance(results, dict):
-                results_data = results
-            else:
-                results_data = {"memories": []}
-            
-            if isinstance(results_data, dict):
-                results_list = results_data.get("memories", []) or results_data.get("data", []) or []
-            elif isinstance(results_data, list):
-                results_list = results_data
-            else:
-                results_list = []
-            
-            filtered = []
-            for result in results_list:
-                if hasattr(result, '__dict__'):
-                    result = result.__dict__
-                
-                result_metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
-                if result_metadata.get("agent_id") == agent_id:
-                    filtered.append(result)
-            
-            return filtered
-            
-        except Exception as e:
-            print(f"Error listing memories: {e}")
-            return []
-    
-    async def list_spaces(self) -> List[Dict[str, Any]]:
-        """List all available spaces"""
-        return []
-    
-    async def create_space(self, name: str, description: Optional[str] = None) -> Dict[str, Any]:
-        """Create a new space"""
-        raise NotImplementedError("Space creation not implemented yet")
-    
-    async def close(self):
-        """Close the client"""
-        if hasattr(self.client, 'close') and callable(self.client.close):
-            self.client.close()
+   

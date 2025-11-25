@@ -365,7 +365,7 @@ class MemoryService:
                 
                 memories = []
                 if results and results.get("ids"):
-                    for i, doc_id in enumerate(results["ids"]):
+                    for i in enumerate(results["ids"]):
                         metadata = results["metadatas"][i] if results.get("metadatas") and i < len(results["metadatas"]) else {}
                         doc = results["documents"][i] if results.get("documents") and i < len(results["documents"]) else "{}"
                         
